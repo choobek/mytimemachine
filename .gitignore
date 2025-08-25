@@ -1,6 +1,7 @@
 .idea
 .DS_Store
 pretrained_models/
+dataset_prep/
 shape_predictor_68_face_landmarks.dat
 __pycache__
 training-runs*
