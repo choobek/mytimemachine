@@ -65,8 +65,8 @@ class Coach:
 		self.mse_loss = nn.MSELoss().to(self.device).eval()
 		if self.opts.lpips_lambda > 0:
 			self.lpips_loss = LPIPS(net_type='alex').to(self.device).eval()
-		if self.opts.id_lambda > 0:
-			self.id_loss = id_loss.IDLoss().to(self.device).eval()
+		# Always initialize ID loss for feature extraction, even if id_lambda is 0
+		self.id_loss = id_loss.IDLoss().to(self.device).eval()
 		if self.opts.w_norm_lambda > 0:
 			self.w_norm_loss = w_norm.WNormLoss(opts=self.opts)
 		if self.opts.aging_lambda > 0:
@@ -100,7 +100,9 @@ class Coach:
 			# x and y are the same in this case
 			x = x.to(self.device).float()
 			img = x.unsqueeze(0)
-			feat = self.id_loss.extract_feats(img)
+			# Temporarily skip feature extraction to test basic training
+			# feat = self.id_loss.extract_feats(img)
+			feat = torch.randn(1, 512).to(self.device)  # Dummy features for testing
 			# self.feats_dict[x_path] = feat
 			# x_age = self.aging_loss.extract_ages(img) / 100.
 			x_age = self.aging_loss.extract_ages_gt(x_path) / 100
@@ -551,7 +553,7 @@ class Coach:
 		loss_dict = {}
 		id_logs = []
 		desc = self.opts.exp_dir.split('/')[-2] # do not include 00000x in the path
-		debug_dir_exp = '/playpen-nas-ssd/luchao/projects/SAM/debug/'
+		debug_dir_exp = 'debug/'
 		debug_dir_exp = os.path.join(debug_dir_exp, desc)
 		if os.path.exists(debug_dir_exp) and self.global_step == 0:
 			shutil.rmtree(debug_dir_exp)
