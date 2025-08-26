@@ -431,6 +431,10 @@ class Coach:
 				# 		self.log_metrics(decoder_loss_dict, prefix='decoder')
 
 
+				# Initialize loss_dict if not defined (for decoder-only training)
+				if 'loss_dict' not in locals():
+					loss_dict = {}
+					
 				if self.global_step % self.opts.save_interval == 0 or self.global_step == self.opts.max_steps:
 					self.checkpoint_me(loss_dict, is_best=False)
 

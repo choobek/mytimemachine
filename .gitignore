@@ -18,7 +18,6 @@ supplementary*
 weights
 output_*
 *.csv
-helper*
 age_dataset
 README_*.md
 !assets/
