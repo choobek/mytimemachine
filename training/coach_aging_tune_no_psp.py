@@ -526,7 +526,7 @@ class Coach:
 		loss_dict = {}
 		id_logs = []
 		desc = self.opts.exp_dir.split('/')[-2] # do not include 00000x in the path
-		debug_dir_exp = '/playpen-nas-ssd/luchao/projects/SAM/debug/'
+		debug_dir_exp = 'debug/'
 		debug_dir_exp = os.path.join(debug_dir_exp, desc)
 		if os.path.exists(debug_dir_exp) and self.global_step == 0:
 			shutil.rmtree(debug_dir_exp)

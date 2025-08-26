@@ -496,7 +496,7 @@ class Coach:
 		loss_dict = {}
 		id_logs = []
 		desc = self.opts.exp_dir.split('/')[-2] # do not include 00000x in the path
-		debug_dir_exp = '/playpen-nas-ssd/luchao/projects/SAM/debug/'
+		debug_dir_exp = 'debug/'
 		debug_dir_exp = os.path.join(debug_dir_exp, desc)
 		os.makedirs(debug_dir_exp, exist_ok=True)
 		if self.global_step == 0:
