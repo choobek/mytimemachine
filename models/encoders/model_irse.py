@@ -9,7 +9,7 @@ Modified Backbone implementation from [TreB1eN](https://github.com/TreB1eN/Insig
 class Backbone(Module):
 	def __init__(self, input_size, num_layers, mode='ir', drop_ratio=0.4, affine=True):
 		super(Backbone, self).__init__()
-		assert input_size in [112, 224], "input_size should be 112 or 224"
+		assert input_size in [56, 112, 224], "input_size should be 56, 112 or 224"
 		assert num_layers in [50, 100, 152], "num_layers should be 50, 100 or 152"
 		assert mode in ['ir', 'ir_se'], "mode should be ir or ir_se"
 		blocks = get_blocks(num_layers)
@@ -20,17 +20,30 @@ class Backbone(Module):
 		self.input_layer = Sequential(Conv2d(3, 64, (3, 3), 1, 1, bias=False),
 									  BatchNorm2d(64),
 									  PReLU(64))
-		if input_size == 112:
+		# Calculate the actual feature map size based on the architecture
+		# For IR-SE50 with 56x56 input, the final feature map is 7x7
+		# For IR-SE50 with 112x112 input, the final feature map is 14x14
+		# For IR-SE50 with 224x224 input, the final feature map is 28x28
+		if input_size == 56:
+			feature_size = 7  # 56 / 2^3 (3 stride-2 operations in the backbone)
 			self.output_layer = Sequential(BatchNorm2d(512),
 			                               Dropout(drop_ratio),
 			                               Flatten(),
-			                               Linear(512 * 7 * 7, 512),
+			                               Linear(512 * feature_size * feature_size, 512),
 			                               BatchNorm1d(512, affine=affine))
-		else:
+		elif input_size == 112:
+			feature_size = 14  # 112 / 2^3 (3 stride-2 operations in the backbone)
 			self.output_layer = Sequential(BatchNorm2d(512),
 			                               Dropout(drop_ratio),
 			                               Flatten(),
-			                               Linear(512 * 14 * 14, 512),
+			                               Linear(512 * feature_size * feature_size, 512),
+			                               BatchNorm1d(512, affine=affine))
+		else:  # input_size == 224
+			feature_size = 28  # 224 / 2^3 (3 stride-2 operations in the backbone)
+			self.output_layer = Sequential(BatchNorm2d(512),
+			                               Dropout(drop_ratio),
+			                               Flatten(),
+			                               Linear(512 * feature_size * feature_size, 512),
 			                               BatchNorm1d(512, affine=affine))
 
 		modules = []

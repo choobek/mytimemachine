@@ -45,7 +45,12 @@ class pSp(nn.Module):
 					break # only load once
 			if self.opts.start_from_encoded_w_plus:
 				self.pretrained_encoder = self.__get_pretrained_psp_encoder()
-				self.pretrained_encoder.load_state_dict(self.__get_keys(ckpt, 'pretrained_encoder'), strict=True)
+				try:
+					self.pretrained_encoder.load_state_dict(self.__get_keys(ckpt, 'pretrained_encoder'), strict=True)
+				except RuntimeError as e:
+					print(f"Warning: Could not load pretrained encoder with strict=True: {e}")
+					print("Attempting to load with strict=False...")
+					self.pretrained_encoder.load_state_dict(self.__get_keys(ckpt, 'pretrained_encoder'), strict=False)
 			self.__load_latent_avg(ckpt)
 		else:
 			print('Loading encoders weights from irse50!')

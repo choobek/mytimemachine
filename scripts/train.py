@@ -12,9 +12,9 @@ sys.path.append("..")
 from options.train_options import TrainOptions
 # todo: choose the coach
 # from training.coach_aging_tune_psp import Coach
-# from training.coach_aging_orig import Coach
+from training.coach_aging_orig import Coach
 # from training.coach_aging_tune_no_psp import Coach
-from training.coach_aging_delta import Coach
+# from training.coach_aging_delta import Coach
 
 import re
 

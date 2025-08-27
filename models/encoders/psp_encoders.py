@@ -25,7 +25,8 @@ class GradualStyleBlock(Module):
 
     def forward(self, x):
         x = self.convs(x)
-        x = x.view(-1, self.out_c)
+        batch_size = x.shape[0]
+        x = x.view(batch_size, -1)  # Preserve batch dimension
         x = self.linear(x)
         return x
 
@@ -57,11 +58,11 @@ class GradualStyleEncoder(Module):
         self.middle_ind = 7
         for i in range(self.style_count):
             if i < self.coarse_ind:
-                style = GradualStyleBlock(512, 512, 16)
+                style = GradualStyleBlock(512, 512, 32)  # c3 is 32x32
             elif i < self.middle_ind:
-                style = GradualStyleBlock(512, 512, 32)
+                style = GradualStyleBlock(512, 512, 64)  # p2 is 64x64
             else:
-                style = GradualStyleBlock(512, 512, 64)
+                style = GradualStyleBlock(512, 512, 128)  # p1 is 128x128
             self.styles.append(style)
         self.latlayer1 = nn.Conv2d(256, 512, kernel_size=1, stride=1, padding=0)
         self.latlayer2 = nn.Conv2d(128, 512, kernel_size=1, stride=1, padding=0)

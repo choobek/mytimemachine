@@ -22,6 +22,9 @@ class AgeTransformer(object):
 		if self.target_age == "uniform_random":
 			return np.random.randint(low=0., high=101, size=1)[0]
 		elif self.target_age == "interpolation":
+			# Handle case where range has same min and max values
+			if self.range[0] >= self.range[1]:
+				return self.range[0]
 			return np.random.randint(low=self.range[0], high=self.range[1], size=1)[0]
 		elif self.target_age == "extrapolation":
 			return np.random.choice([np.random.randint(low=0., high=self.range[0], size=1)[0],
