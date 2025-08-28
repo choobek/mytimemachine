@@ -932,9 +932,91 @@ class Coach:
 	def __get_save_dict(self):
 		save_dict = {
 			'state_dict': self.net.state_dict(),
+			'optimizer': self.optimizer.state_dict(),
+			'global_step': self.global_step,
 			'opts': vars(self.opts)
 		}
 		# save the latent avg in state_dict for inference if truncation of w was used during training
 		if self.net.latent_avg is not None:
 			save_dict['latent_avg'] = self.net.latent_avg
 		return save_dict
+
+	def load_checkpoint(self, checkpoint_path):
+		"""Load checkpoint and resume training"""
+		print(f"Loading checkpoint from: {checkpoint_path}")
+		checkpoint = torch.load(checkpoint_path, map_location=self.device)
+		
+		# Load model state
+		self.net.load_state_dict(checkpoint['state_dict'])
+		
+		# Load latent average if available
+		if 'latent_avg' in checkpoint:
+			self.net.latent_avg = checkpoint['latent_avg']
+		
+		# Load optimizer state if available
+		if 'optimizer' in checkpoint:
+			self.optimizer.load_state_dict(checkpoint['optimizer'])
+			print("Optimizer state loaded successfully")
+		else:
+			print("Warning: No optimizer state found in checkpoint. Starting with fresh optimizer.")
+		
+		# Load global step from checkpoint if available, otherwise extract from filename
+		if 'global_step' in checkpoint:
+			self.global_step = checkpoint['global_step']
+			print(f"Resuming from step: {self.global_step}")
+		else:
+			# Fallback: Extract global step from checkpoint filename if available
+			checkpoint_name = os.path.basename(checkpoint_path)
+			if 'iteration_' in checkpoint_name:
+				step_str = checkpoint_name.replace('iteration_', '').replace('.pt', '')
+				try:
+					self.global_step = int(step_str)
+					print(f"Resuming from step: {self.global_step}")
+				except ValueError:
+					print("Could not extract step from checkpoint name, starting from 0")
+					self.global_step = 0
+			else:
+				print("Could not determine step from checkpoint name, starting from 0")
+				self.global_step = 0
+		
+		print(f"Checkpoint loaded successfully. Resuming from step {self.global_step}")
+
+	def load_checkpoint_legacy(self, checkpoint_path):
+		"""Load legacy checkpoint that doesn't have optimizer state"""
+		print(f"Loading legacy checkpoint from: {checkpoint_path}")
+		checkpoint = torch.load(checkpoint_path, map_location=self.device)
+		
+		# Load model state
+		self.net.load_state_dict(checkpoint['state_dict'])
+		
+		# Load latent average if available
+		if 'latent_avg' in checkpoint:
+			self.net.latent_avg = checkpoint['latent_avg']
+		
+		# Extract global step from checkpoint filename
+		checkpoint_name = os.path.basename(checkpoint_path)
+		if 'iteration_' in checkpoint_name:
+			step_str = checkpoint_name.replace('iteration_', '').replace('.pt', '')
+			try:
+				self.global_step = int(step_str)
+				print(f"Resuming from step: {self.global_step}")
+			except ValueError:
+				print("Could not extract step from checkpoint name, starting from 0")
+				self.global_step = 0
+		else:
+			print("Could not determine step from checkpoint name, starting from 0")
+			self.global_step = 0
+		
+		# For legacy checkpoints, we need to warm up the optimizer
+		# Run a few dummy forward passes to initialize optimizer state properly
+		print("Warming up optimizer with dummy forward passes...")
+		self.net.train()
+		dummy_input = torch.randn(1, 4, 256, 256).to(self.device)
+		
+		for i in range(10):  # Warm up with 10 dummy passes
+			self.optimizer.zero_grad()
+			with torch.no_grad():
+				_, _ = self.net.forward(dummy_input, return_latents=True)
+			# Don't actually step the optimizer, just initialize its state
+		
+		print(f"Legacy checkpoint loaded successfully. Resuming from step {self.global_step}")

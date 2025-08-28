@@ -101,6 +101,14 @@ class TrainOptions:
         self.parser.add_argument('--nearest_neighbor_id_loss_lambda', default=1, type=float,
                                  help="Weight for nearest neighbor id loss")
         
+        # arguments for resuming training
+        self.parser.add_argument('--resume_checkpoint', default=None, type=str,
+                                 help='Path to checkpoint to resume training from')
+        self.parser.add_argument('--additional_steps', default=10000, type=int,
+                                 help='Number of additional steps to train after resuming')
+        self.parser.add_argument('--continue_in_same_dir', action='store_true',
+                                 help='Continue training in the same directory as the checkpoint')
+        
         
     def parse(self):
         opts = self.parser.parse_args()
