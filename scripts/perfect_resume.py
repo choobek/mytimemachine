@@ -77,8 +77,12 @@ class PerfectResumeCoach(Coach):
         if 'optimizer' in checkpoint:
             # Modern checkpoint with optimizer state
             print("📦 Loading complete optimizer state...")
-            self.optimizer.load_state_dict(checkpoint['optimizer'])
-            print("✅ Optimizer state loaded successfully")
+            try:
+                self.optimizer.load_state_dict(checkpoint['optimizer'])
+                print("✅ Optimizer state loaded successfully")
+            except Exception as e:
+                print(f"⚠️  Optimizer load failed ({e}). Reinitializing optimizer state.")
+                self._initialize_optimizer_perfectly()
         else:
             # Legacy checkpoint without optimizer state
             print("⚠️  Legacy checkpoint detected - no optimizer state found")

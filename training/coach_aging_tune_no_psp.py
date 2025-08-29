@@ -28,6 +28,7 @@ import collections
 import shutil
 import numpy as np
 import copy
+import math
 class Coach:
 	def __init__(self, opts):
 		self.opts = opts
@@ -76,6 +77,10 @@ class Coach:
 		self.optimizer = self.configure_optimizers()
 		self.optimizer_blender = self.configure_optimizers_blender()
 		self.optimizer_decoder = self.configure_optimizers_decoder()
+		# Initialize schedulers
+		self.scheduler = self._build_scheduler(self.optimizer)
+		self.scheduler_blender = self._build_scheduler(self.optimizer_blender)
+		self.scheduler_decoder = self._build_scheduler(self.optimizer_decoder)
 
 		# Initialize dataset
 		self.train_dataset, self.test_dataset = self.configure_datasets()
@@ -234,8 +239,17 @@ class Coach:
 				if no_aging:
 					x_input = self.__set_target_to_source(x=x, input_ages=input_ages)
 				else:
-					# perform in-domain aging in 50% of the time
-					self.interpolation = random.random() <= (1. / 2)
+					# curriculum: gate/anneal extrapolation probability
+					start = int(getattr(self.opts, 'extrapolation_start_step', 0))
+					if self.global_step < start:
+						extrap_prob = 0.0
+					else:
+						t = min(1.0, (self.global_step - start) / max(1, (self.opts.max_steps - start)))
+						p0 = float(getattr(self.opts, 'extrapolation_prob_start', 0.0))
+						p1 = float(getattr(self.opts, 'extrapolation_prob_end', 0.5))
+						extrap_prob = max(0.0, min(1.0, p0 + t * (p1 - p0)))
+					# choose interpolation unless we sample extrapolation
+					self.interpolation = (random.random() > extrap_prob)
 					if self.interpolation:
 						x_input = [self.age_transformer_interpolation(img.cpu()).to(self.device) for img in x]
 					else:
@@ -289,7 +303,11 @@ class Coach:
 						loss_dict.update(cycle_loss_dict)
 						loss_dict["loss"] = loss_dict["loss_real"] + loss_dict["loss_cycle"]
 
-						self.optimizer.step()
+						# Gradient clipping + NaN guard
+						step_ok = self._clip_and_step(self.optimizer, self.net.encoder.parameters())
+						# Scheduler step
+						if step_ok and self.scheduler is not None:
+							self.scheduler.step()
 
 					else:
 						self.optimizer_blender.zero_grad()
@@ -340,7 +358,10 @@ class Coach:
 						loss_dict.update(cycle_loss_dict)
 						loss_dict["loss"] = loss_dict["loss_real"] + loss_dict.get("loss_cycle", 0)
 
-						self.optimizer_blender.step()
+						# Gradient clipping + NaN guard for blender
+						step_ok = self._clip_and_step(self.optimizer_blender, self.net.blender.parameters())
+						if step_ok and self.scheduler_blender is not None:
+							self.scheduler_blender.step()
 
 				if self.global_step % self.opts.board_interval == 0:
 					if no_aging:
@@ -377,7 +398,10 @@ class Coach:
 
 					loss.backward()
 
-					self.optimizer_decoder.step()
+					# Gradient clipping + NaN guard for decoder
+					step_ok = self._clip_and_step(self.optimizer_decoder, self.net.decoder.parameters())
+					if step_ok and self.scheduler_decoder is not None:
+						self.scheduler_decoder.step()
 
 					if self.global_step % self.opts.board_interval == 0:
 						self.print_metrics(decoder_loss_dict, prefix='decoder')
@@ -473,6 +497,64 @@ class Coach:
 		# 	param.requires_grad = True
 		optimizer = Ranger(params, lr=self.opts.learning_rate)
 		return optimizer
+
+	def _build_scheduler(self, optimizer):
+		"""Cosine decay with warmup if enabled via opts.scheduler_type."""
+		if optimizer is None:
+			return None
+		scheduler_type = getattr(self.opts, 'scheduler_type', 'none')
+		if scheduler_type is None or scheduler_type.lower() == 'none':
+			return None
+		if scheduler_type.lower() != 'cosine':
+			return None
+		warmup_steps = max(0, int(getattr(self.opts, 'warmup_steps', 0)))
+		min_lr = float(getattr(self.opts, 'min_lr', 0.0))
+		max_steps = int(getattr(self.opts, 'max_steps', 0))
+		# capture base lr per group
+		for group in optimizer.param_groups:
+			group.setdefault('initial_lr', group.get('lr', 1e-8))
+		def lr_lambda(step):
+			# piecewise: linear warmup, then cosine to min_lr
+			if max_steps <= 0:
+				return 1.0
+			if warmup_steps > 0 and step < warmup_steps:
+				return float(step + 1) / float(warmup_steps)
+			progress = min(1.0, float(step - warmup_steps) / max(1.0, float(max_steps - warmup_steps)))
+			cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+			# compute ratio using first group's base
+			base_lr = optimizer.param_groups[0].get('initial_lr', optimizer.param_groups[0].get('lr', 1e-8))
+			min_ratio = min_lr / max(base_lr, 1e-12)
+			min_ratio = max(0.0, min(1.0, min_ratio))
+			return min_ratio + (1.0 - min_ratio) * cosine
+		return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+	def _clip_and_step(self, optimizer, params_iter):
+		"""Clip gradients if enabled; guard against NaN/Inf; step optimizer if ok.
+		Returns True if step performed, else False."""
+		max_norm = float(getattr(self.opts, 'grad_clip_norm', 0.0) or 0.0)
+		params = [p for p in params_iter if p.requires_grad and p.grad is not None]
+		grad_norm = None
+		if len(params) == 0:
+			optimizer.step()
+			optimizer.zero_grad(set_to_none=True)
+			return True
+		if max_norm > 0.0:
+			grad_norm = torch.nn.utils.clip_grad_norm_(params, max_norm)
+		else:
+			# compute norm without clipping
+			total = 0.0
+			for p in params:
+				param_norm = p.grad.data.norm(2)
+				total += param_norm.item() ** 2
+			grad_norm = math.sqrt(total)
+		nan_guard = bool(getattr(self.opts, 'nan_guard', False))
+		if nan_guard and (not torch.isfinite(torch.as_tensor(grad_norm))):
+			print(f"Warning: grad norm is not finite ({grad_norm}); skipping step at {self.global_step}")
+			optimizer.zero_grad(set_to_none=True)
+			return False
+		optimizer.step()
+		optimizer.zero_grad(set_to_none=True)
+		return True
 
 	def configure_optimizers_blender(self):
 		params = list(self.net.blender.parameters())

@@ -37,6 +37,17 @@ class TrainOptions:
                                  help='Optimizer learning rate')
         self.parser.add_argument('--optim_name', default='ranger', type=str,
                                  help='Which optimizer to use')
+        # Scheduler / stability controls
+        self.parser.add_argument('--scheduler_type', default='cosine', type=str,
+                                 help='LR scheduler: cosine|none')
+        self.parser.add_argument('--warmup_steps', default=500, type=int,
+                                 help='LR warmup steps before reaching base LR')
+        self.parser.add_argument('--min_lr', default=1e-06, type=float,
+                                 help='Minimum LR for cosine decay')
+        self.parser.add_argument('--grad_clip_norm', default=1.0, type=float,
+                                 help='Clip gradient global norm; <=0 disables')
+        self.parser.add_argument('--nan_guard', action='store_true',
+                                 help='Skip optimizer step on NaN/Inf grads')
         self.parser.add_argument('--train_encoder', action='store_true',
                                  help='Whether to train the encoder model')
         self.parser.add_argument('--train_decoder', action='store_true',
@@ -100,6 +111,18 @@ class TrainOptions:
                                  help="Weight for adaptive w-norm loss")
         self.parser.add_argument('--nearest_neighbor_id_loss_lambda', default=1, type=float,
                                  help="Weight for nearest neighbor id loss")
+        # curriculum for extrapolation
+        self.parser.add_argument('--extrapolation_start_step', default=3000, type=int,
+                                 help='Training step to allow any extrapolation')
+        self.parser.add_argument('--extrapolation_prob_start', default=0.0, type=float,
+                                 help='Start probability of extrapolation once enabled')
+        self.parser.add_argument('--extrapolation_prob_end', default=0.5, type=float,
+                                 help='Final probability of choosing extrapolation')
+        # decoder phase loss scaling
+        self.parser.add_argument('--w_norm_lambda_decoder_scale', default=0.5, type=float,
+                                 help='Scale w-norm lambda during decoder phase')
+        self.parser.add_argument('--aging_lambda_decoder_scale', default=0.5, type=float,
+                                 help='Scale aging lambda during decoder phase')
         
         # arguments for resuming training
         self.parser.add_argument('--resume_checkpoint', default=None, type=str,

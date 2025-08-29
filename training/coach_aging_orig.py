@@ -19,6 +19,7 @@ from criteria.lpips.lpips import LPIPS
 from criteria.aging_loss import AgingLoss
 from models.psp import pSp
 from training.ranger import Ranger
+import math
 
 
 class Coach:
@@ -78,6 +79,9 @@ class Coach:
 		if hasattr(opts, 'resume_checkpoint') and opts.resume_checkpoint:
 			self.load_checkpoint(opts.resume_checkpoint)
 
+		# Build optional scheduler for stability
+		self.scheduler = self._build_scheduler(self.optimizer)
+
 	def perform_forward_pass(self, x):
 		y_hat, latent = self.net.forward(x, return_latents=True)
 		return y_hat, latent
@@ -128,7 +132,10 @@ class Coach:
 																	  no_aging=no_aging,
 																	  data_type="cycle")
 				loss.backward()
-				self.optimizer.step()
+				# gradient clipping + NaN guard + scheduler
+				self._clip_and_step(self.optimizer, self.net.encoder.parameters())
+				if self.scheduler is not None:
+					self.scheduler.step()
 
 				# combine the logs of both forwards
 				for idx, cycle_log in enumerate(cycle_id_logs):
@@ -251,6 +258,57 @@ class Coach:
 			optimizer = Ranger(params, lr=self.opts.learning_rate)
 		return optimizer
 
+	def _build_scheduler(self, optimizer):
+		if optimizer is None:
+			return None
+		scheduler_type = getattr(self.opts, 'scheduler_type', 'none')
+		if scheduler_type is None or scheduler_type.lower() == 'none':
+			return None
+		if scheduler_type.lower() != 'cosine':
+			return None
+		warmup_steps = max(0, int(getattr(self.opts, 'warmup_steps', 0)))
+		min_lr = float(getattr(self.opts, 'min_lr', 0.0))
+		max_steps = int(getattr(self.opts, 'max_steps', 0))
+		for group in optimizer.param_groups:
+			group.setdefault('initial_lr', group.get('lr', 1e-8))
+		def lr_lambda(step):
+			if max_steps <= 0:
+				return 1.0
+			if warmup_steps > 0 and step < warmup_steps:
+				return float(step + 1) / float(warmup_steps)
+			progress = min(1.0, float(step - warmup_steps) / max(1.0, float(max_steps - warmup_steps)))
+			cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+			base_lr = optimizer.param_groups[0].get('initial_lr', optimizer.param_groups[0].get('lr', 1e-8))
+			min_ratio = min_lr / max(base_lr, 1e-12)
+			min_ratio = max(0.0, min(1.0, min_ratio))
+			return min_ratio + (1.0 - min_ratio) * cosine
+		return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+	def _clip_and_step(self, optimizer, params_iter):
+		max_norm = float(getattr(self.opts, 'grad_clip_norm', 0.0) or 0.0)
+		params = [p for p in params_iter if p.requires_grad and p.grad is not None]
+		grad_norm = None
+		if len(params) == 0:
+			optimizer.step()
+			optimizer.zero_grad(set_to_none=True)
+			return True
+		if max_norm > 0.0:
+			grad_norm = torch.nn.utils.clip_grad_norm_(params, max_norm)
+		else:
+			total = 0.0
+			for p in params:
+				param_norm = p.grad.data.norm(2)
+				total += param_norm.item() ** 2
+			grad_norm = math.sqrt(total)
+		nan_guard = bool(getattr(self.opts, 'nan_guard', False))
+		if nan_guard and (not torch.isfinite(torch.as_tensor(grad_norm))):
+			print(f"Warning: grad norm is not finite ({grad_norm}); skipping step at {self.global_step}")
+			optimizer.zero_grad(set_to_none=True)
+			return False
+		optimizer.step()
+		optimizer.zero_grad(set_to_none=True)
+		return True
+
 	def configure_datasets(self):
 		if self.opts.dataset_type not in data_configs.DATASETS.keys():
 			Exception(f'{self.opts.dataset_type} is not a valid dataset_type')
@@ -372,8 +430,11 @@ class Coach:
 		
 		# Load optimizer state if available
 		if 'optimizer' in checkpoint:
-			self.optimizer.load_state_dict(checkpoint['optimizer'])
-			print("Optimizer state loaded successfully")
+			try:
+				self.optimizer.load_state_dict(checkpoint['optimizer'])
+				print("Optimizer state loaded successfully")
+			except Exception as e:
+				print(f"Warning: Failed to load optimizer state ({e}). Reinitializing optimizer.")
 		else:
 			print("Warning: No optimizer state found in checkpoint. Starting with fresh optimizer.")
 		
