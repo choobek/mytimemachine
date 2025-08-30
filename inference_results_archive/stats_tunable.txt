@@ -1,0 +1,5 @@
+Runtime 0.7533+-0.0530
+Successful inference: 31
+Aging strength tested: 0.6
+Style layers modified: [8, 9, 10, 11, 12]
+Methods compared: ['full_aging', 'reduced_aging', 'conservative', 'minimal']
