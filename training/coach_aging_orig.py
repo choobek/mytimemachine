@@ -133,7 +133,12 @@ class Coach:
 																	  data_type="cycle")
 				loss.backward()
 				# gradient clipping + NaN guard + scheduler
-				self._clip_and_step(self.optimizer, self.net.encoder.parameters())
+				# clip only the parameters that are actually being optimized
+				trainable_params = []
+				for group in self.optimizer.param_groups:
+					for p in group.get('params', []):
+						trainable_params.append(p)
+				self._clip_and_step(self.optimizer, trainable_params)
 				if self.scheduler is not None:
 					self.scheduler.step()
 
@@ -249,9 +254,30 @@ class Coach:
 				f.write(f'Step - {self.global_step}, \n{loss_dict}\n')
 
 	def configure_optimizers(self):
-		params = list(self.net.encoder.parameters())
-		if self.opts.train_decoder:
-			params += list(self.net.decoder.parameters())
+		# Respect train flags and set requires_grad accordingly
+		train_encoder = bool(getattr(self.opts, 'train_encoder', False))
+		train_decoder = bool(getattr(self.opts, 'train_decoder', False))
+
+		encoder_params = list(self.net.encoder.parameters())
+		decoder_params = list(self.net.decoder.parameters()) if hasattr(self.net, 'decoder') else []
+
+		for p in encoder_params:
+			p.requires_grad = train_encoder
+		for p in decoder_params:
+			p.requires_grad = train_decoder
+
+		params = []
+		if train_encoder:
+			params += encoder_params
+		if train_decoder:
+			params += decoder_params
+
+		# Fallback: if neither flag is set, default to training encoder to avoid empty optimizer
+		if len(params) == 0:
+			for p in encoder_params:
+				p.requires_grad = True
+			params = encoder_params
+
 		if self.opts.optim_name == 'adam':
 			optimizer = torch.optim.Adam(params, lr=self.opts.learning_rate)
 		else:
@@ -282,7 +308,7 @@ class Coach:
 			min_ratio = min_lr / max(base_lr, 1e-12)
 			min_ratio = max(0.0, min(1.0, min_ratio))
 			return min_ratio + (1.0 - min_ratio) * cosine
-		return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+		return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch=max(-1, int(self.global_step) - 1))
 
 	def _clip_and_step(self, optimizer, params_iter):
 		max_norm = float(getattr(self.opts, 'grad_clip_norm', 0.0) or 0.0)
@@ -366,14 +392,21 @@ class Coach:
 			loss_l2_crop = F.mse_loss(y_hat[:, :, 35:223, 32:220], y[:, :, 35:223, 32:220])
 			loss_dict['loss_l2_crop'] = float(loss_l2_crop)
 			loss += loss_l2_crop * self.opts.l2_lambda_crop
-		if self.opts.w_norm_lambda > 0:
+		# decoder-phase scaled regularizers
+		decoder_phase = bool(getattr(self.opts, 'train_decoder', False)) and not bool(getattr(self.opts, 'train_encoder', False))
+		effective_w_norm_lambda = float(getattr(self.opts, 'w_norm_lambda', 0.0) or 0.0)
+		effective_aging_lambda = float(getattr(self.opts, 'aging_lambda', 0.0) or 0.0)
+		if decoder_phase:
+			effective_w_norm_lambda *= float(getattr(self.opts, 'w_norm_lambda_decoder_scale', 1.0))
+			effective_aging_lambda *= float(getattr(self.opts, 'aging_lambda_decoder_scale', 1.0))
+		if effective_w_norm_lambda > 0:
 			loss_w_norm = self.w_norm_loss(latent, latent_avg=self.net.latent_avg)
 			loss_dict[f'loss_w_norm_{data_type}'] = float(loss_w_norm)
-			loss += loss_w_norm * self.opts.w_norm_lambda
-		if self.opts.aging_lambda > 0:
+			loss += loss_w_norm * effective_w_norm_lambda
+		if effective_aging_lambda > 0:
 			aging_loss, id_logs = self.aging_loss(y_hat, y, target_ages, id_logs, label=data_type)
 			loss_dict[f'loss_aging_{data_type}'] = float(aging_loss)
-			loss += aging_loss * self.opts.aging_lambda
+			loss += aging_loss * effective_aging_lambda
 		loss_dict[f'loss_{data_type}'] = float(loss)
 		if data_type == "cycle":
 			loss = loss * self.opts.cycle_lambda
