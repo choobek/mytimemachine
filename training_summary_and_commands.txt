@@ -1,4 +1,4 @@
-First full training:
+First full training (~90 images dataset - before train/test split):
 -----------------------------
 training 00014 30000step command:
 bash -lc "conda activate mytimemachine && python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.1 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.6 --l2_lambda 0.25 --l2_lambda_aging 0.25 --l2_lambda_crop 1 --w_norm_lambda 0.005 --aging_lambda 5 --cycle_lambda 1 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 7 --scheduler_type cosine --warmup_steps 500 --min_lr 1e-6 --grad_clip_norm 1.0 --nan_guard --extrapolation_start_step 3000 --extrapolation_prob_start 0.0 --extrapolation_prob_end 0.5 --train_encoder --max_steps 30000 | cat"
@@ -6,7 +6,7 @@ training 00015 35000-step decoder-only resume
 bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.1 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.6 --l2_lambda 0.25 --l2_lambda_aging 0.25 --l2_lambda_crop 1 --w_norm_lambda 0.005 --aging_lambda 5 --cycle_lambda 1 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 7 --scheduler_type cosine --warmup_steps 500 --min_lr 1e-6 --grad_clip_norm 1.0 --nan_guard --resume_checkpoint experiments/full_training_run/00014/checkpoints/iteration_28000.pt --train_decoder --max_steps 35000 --learning_rate 0.0001"
 
 
-Second full training:
+Second full training (~180 images dataset - before train/test split):
 -----------------------------
 Changes we did before next try:
 ### TL;DR
@@ -44,7 +44,7 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate my
 - If artifacts appear: slightly raise w_norm_lambda back toward 0.004 and keep grad clipping.
 
 
-Third full training
+Third full training (still ~180 images dataset - no changes since previous training)
 -------------------------------------
 Goal: push stronger personalization while reducing smoothing.
 Changes vs 00016/00018:
@@ -247,3 +247,21 @@ This run improves or matches previous runs on identity, pixel, perceptual, cycle
 Visual quality-check
 
 Even tho the tensorboard logs shows the improvements - visually the effects are poorer than from Second Full Training. The Second Full Training was visually cleaner and better match the actor without any artifacts. I would go back to previous settings as the starting point.
+
+Fourth training on expanded dataset (>240 images; validation enabled)
+-------------------------------------
+Notes:
+- Train: data/train; Test: data/test (expanded to >240 images each).
+- Validation and test logging are enabled in `training/coach_aging_orig.py` (val_interval=500).
+- Hyperparameters replicate the best prior runs: Stage 1 ≈ 00016, Stage 2 ≈ 00018.
+
+Stage 1 — replicate 00016 (encoder+decoder, 30k steps)
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 2 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 20 --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard --extrapolation_start_step 3000 --extrapolation_prob_start 0.0 --extrapolation_prob_end 0.5 --train_encoder --max_steps 30000 | cat"
+```
+
+Stage 2 — replicate 00018 (decoder-only, 50k steps)
+Run after Stage 1 completes; replace 000XX with the new Stage 1 folder name.
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 2 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 20 --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_30000.pt --train_decoder --max_steps 50000 --learning_rate 0.00005 | cat"
+```

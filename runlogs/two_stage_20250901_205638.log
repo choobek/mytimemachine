@@ -1,0 +1,106 @@
+[two-stage][2025-09-01 20:56:42] Starting Stage 1 to 30000 steps
+/home/wczub/miniforge3/envs/mytimemachine/lib/python3.10/site-packages/torchvision/models/_utils.py:135: UserWarning: Using 'weights' as positional parameter(s) is deprecated since 0.13 and may be removed in the future. Please use keyword parameter(s) instead.
+  warnings.warn(
+/home/wczub/miniforge3/envs/mytimemachine/lib/python3.10/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=AlexNet_Weights.IMAGENET1K_V1`. You can also use `weights=AlexNet_Weights.DEFAULT` to get the most up-to-date weights.
+  warnings.warn(msg)
+{'adaptive_w_norm_lambda': 20.0,
+ 'additional_steps': 10000,
+ 'aging_lambda': 5.0,
+ 'aging_lambda_decoder_scale': 0.5,
+ 'batch_size': 2,
+ 'board_interval': 50,
+ 'checkpoint_path': 'pretrained_models/sam_ffhq_aging.pt',
+ 'continue_in_same_dir': False,
+ 'cycle_lambda': 2.0,
+ 'dataset_type': 'ffhq_aging',
+ 'exp_dir': 'experiments/full_training_run/00022',
+ 'extrapolation_prob_end': 0.5,
+ 'extrapolation_prob_start': 0.0,
+ 'extrapolation_start_step': 3000,
+ 'gpus': 1,
+ 'grad_clip_norm': 1.0,
+ 'id_lambda': 0.3,
+ 'image_interval': 100,
+ 'input_nc': 4,
+ 'l2_lambda': 0.1,
+ 'l2_lambda_aging': 0.25,
+ 'l2_lambda_crop': 0.5,
+ 'label_nc': 0,
+ 'learning_rate': 0.0001,
+ 'lpips_lambda': 0.1,
+ 'lpips_lambda_aging': 0.1,
+ 'lpips_lambda_crop': 0.8,
+ 'max_steps': 30000,
+ 'min_lr': 5e-07,
+ 'nan_guard': True,
+ 'nearest_neighbor_id_loss_lambda': 1,
+ 'optim_name': 'ranger',
+ 'output_size': 1024,
+ 'pretrained_psp_path': 'pretrained_models/psp_ffhq_encode.pt',
+ 'resume_checkpoint': None,
+ 'save_interval': 1000,
+ 'scheduler_type': 'cosine',
+ 'start_from_encoded_w_plus': True,
+ 'start_from_latent_avg': False,
+ 'stylegan_weights': 'pretrained_models/stylegan2-ffhq-config-f.pt',
+ 'target_age': 'uniform_random',
+ 'test_batch_size': 2,
+ 'test_workers': 2,
+ 'train_dataset': 'data/train',
+ 'train_decoder': False,
+ 'train_encoder': True,
+ 'use_weighted_id_loss': True,
+ 'val_interval': 500,
+ 'w_norm_lambda': 0.003,
+ 'w_norm_lambda_decoder_scale': 0.5,
+ 'warmup_steps': 500,
+ 'workers': 2}
+Loading SAM from checkpoint: pretrained_models/sam_ffhq_aging.pt
+Warning: Could not load pretrained encoder with strict=True: Error(s) in loading state_dict for GradualStyleEncoder:
+	Missing key(s) in state_dict: "styles.0.convs.8.weight", "styles.0.convs.8.bias", "styles.1.convs.8.weight", "styles.1.convs.8.bias", "styles.2.convs.8.weight", "styles.2.convs.8.bias", "styles.3.convs.10.weight", "styles.3.convs.10.bias", "styles.4.convs.10.weight", "styles.4.convs.10.bias", "styles.5.convs.10.weight", "styles.5.convs.10.bias", "styles.6.convs.10.weight", "styles.6.convs.10.bias", "styles.7.convs.12.weight", "styles.7.convs.12.bias", "styles.8.convs.12.weight", "styles.8.convs.12.bias", "styles.9.convs.12.weight", "styles.9.convs.12.bias", "styles.10.convs.12.weight", "styles.10.convs.12.bias", "styles.11.convs.12.weight", "styles.11.convs.12.bias", "styles.12.convs.12.weight", "styles.12.convs.12.bias", "styles.13.convs.12.weight", "styles.13.convs.12.bias", "styles.14.convs.12.weight", "styles.14.convs.12.bias", "styles.15.convs.12.weight", "styles.15.convs.12.bias", "styles.16.convs.12.weight", "styles.16.convs.12.bias", "styles.17.convs.12.weight", "styles.17.convs.12.bias". 
+Attempting to load with strict=False...
+Loading ResNet ArcFace
+Loading dataset for ffhq_aging
+Number of training samples: 196
+Number of test samples: 49
+/home/wczub/RND/AI_DEAGING/repos/mytimemachine/./training/ranger.py:123: UserWarning: This overload of addcmul_ is deprecated:
+	addcmul_(Number value, Tensor tensor1, Tensor tensor2)
+Consider using one of the following signatures instead:
+	addcmul_(Tensor tensor1, Tensor tensor2, *, Number value) (Triggered internally at ../torch/csrc/utils/python_arg_parser.cpp:1630.)
+  exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+Metrics for train, step 0
+	loss_id_real =  1.0484645366668701
+	id_improve_real =  -1.0949128717184067
+	loss_l2_real =  0.6707776784896851
+	loss_lpips_real =  0.7090493440628052
+	loss_lpips_crop =  0.661941409111023
+	loss_l2_crop =  0.8597574234008789
+	loss_w_norm_real =  180.34307861328125
+	loss_aging_real =  0.14280886948108673
+	loss_real =  2.7950243949890137
+	loss_id_cycle =  1.0120124816894531
+	id_improve_cycle =  -1.012012368068099
+	loss_l2_cycle =  0.6821813583374023
+	loss_lpips_cycle =  0.7074845433235168
+	loss_w_norm_cycle =  279.6512756347656
+	loss_aging_cycle =  0.020831428468227386
+	loss_cycle =  2.3451132774353027
+	loss =  5.140137672424316
+Metrics for train, step 50
+	loss_id_real =  0.9357445240020752
+	id_improve_real =  -1.0231251623481512
+	loss_l2_real =  0.27941396832466125
+	loss_lpips_real =  0.7193849682807922
+	loss_lpips_crop =  0.6588197946548462
+	loss_l2_crop =  0.2288675606250763
+	loss_w_norm_real =  195.798828125
+	loss_aging_real =  0.05400962382555008
+	loss_real =  1.894168734550476
+	loss_id_cycle =  1.0043795108795166
+	id_improve_cycle =  -1.0043794959783554
+	loss_l2_cycle =  0.28670376539230347
+	loss_lpips_cycle =  0.757439374923706
+	loss_w_norm_cycle =  315.3271484375
+	loss_aging_cycle =  0.015821801498532295
+	loss_cycle =  2.072308301925659
+	loss =  3.9664770364761353
