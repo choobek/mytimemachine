@@ -24,3 +24,4 @@ README_*.md
 !assets/**
 id_network_debug.py
 experiments/
+inference_results/

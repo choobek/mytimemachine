@@ -59,19 +59,191 @@ Changes vs 00016/00018:
 - Stage 2 only: w_norm_lambda_decoder_scale 0.3 (↓ from 0.5), keep aging_lambda_decoder_scale 0.5
 - Stage 2 max_steps: 60000 (↑ from 50000)
 
-- Stage 1 (encoder+decoder), 30k steps, aggressive personalization
+- training 00019 command - Stage 1 (encoder+decoder), 30k steps, aggressive personalization
 ```bash
 bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.45 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 1.0 --l2_lambda 0.05 --l2_lambda_aging 0.25 --l2_lambda_crop 0.2 --w_norm_lambda 0.002 --aging_lambda 5 --cycle_lambda 3 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 28 --scheduler_type cosine --warmup_steps 800 --min_lr 3e-7 --grad_clip_norm 1.0 --nan_guard --extrapolation_start_step 2000 --extrapolation_prob_start 0.0 --extrapolation_prob_end 0.7 --train_encoder --max_steps 30000 | cat"
 ```
 
-- Stage 2 (decoder-only), resume from NEW 30k checkpoint, to 60k steps
-Note: Replace PATH_TO_30K_CKPT with the actual 30k checkpoint path (avoid using angle brackets to prevent shell redirection issues).
+- training 00020 command - Stage 2 (decoder-only), resume from NEW 30k checkpoint, to 60k steps
 ```bash
-bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.45 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 1.0 --l2_lambda 0.05 --l2_lambda_aging 0.25 --l2_lambda_crop 0.2 --w_norm_lambda 0.002 --w_norm_lambda_decoder_scale 0.3 --aging_lambda 5 --aging_lambda_decoder_scale 0.5 --cycle_lambda 3 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 28 --scheduler_type cosine --warmup_steps 800 --min_lr 3e-7 --grad_clip_norm 1.0 --nan_guard --resume_checkpoint PATH_TO_30K_CKPT --train_decoder --max_steps 60000 --learning_rate 0.00005 | cat"
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.45 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 1.0 --l2_lambda 0.05 --l2_lambda_aging 0.25 --l2_lambda_crop 0.2 --w_norm_lambda 0.002 --w_norm_lambda_decoder_scale 0.3 --aging_lambda 5 --aging_lambda_decoder_scale 0.5 --cycle_lambda 3 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 28 --scheduler_type cosine --warmup_steps 800 --min_lr 3e-7 --grad_clip_norm 1.0 --nan_guard --resume_checkpoint experiments/full_training_run/00019/checkpoints/iteration_30000.pt --train_decoder --max_steps 60000 --learning_rate 0.00005 | cat"
 ```
 
-- Two-stage runner (Stage 1 -> auto Stage 2)
-- Finds the newest 30k checkpoint from Stage 1 under `experiments/full_training_run/**/checkpoints/iteration_30000.pt` and launches Stage 2 automatically with the aggressive hyperparameters documented above. Logs will print to console; you can wrap with `nohup ... &` if desired.
-```bash
-bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && chmod +x scripts/train_two_stage.sh && scripts/train_two_stage.sh | cat"
-```
+The description of tensorboard after the training:
+train/id_improve_cycle
+
+Stage-1: rises fast from negative to just below 0.0.
+
+Stage-2: keeps creeping up, stabilizes ~0.00→+0.03 (near the plot’s top band).
+
+Final: ≈0.02–0.03 (best/near-best among runs).
+
+Vs prev.: equal or slightly higher at convergence.
+
+train/id_improve_real
+
+Stage-1: monotonic rise from negative to ≈-0.05.
+
+Stage-2: continues upward, plateaus ~-0.01→+0.02.
+
+Final: ≈0.00–0.02.
+
+Vs prev.: slightly better at the end (less negative / nudges positive).
+
+train/loss (overall)
+
+Stage-1: strong decay ~1.6 → ~0.25.
+
+Stage-2: gentle decay ~0.25 → ~0.16–0.18, low noise.
+
+Final: ≈0.16–0.18 (smooth).
+
+Vs prev.: marginally lower or on par.
+
+train/loss_aging_cycle
+
+Stage-1: drops to ~1e-4–5e-4 quickly.
+
+Stage-2: stays near floor with small, infrequent blips.
+
+Final: ≈1e-4 (very low).
+
+Vs prev.: equal or slightly cleaner (earlier stabilization).
+
+train/loss_aging_real
+
+Stage-1: decays to ~1e-3 with oscillations.
+
+Stage-2: some spikes early in the phase but damped; baseline keeps sliding down.
+
+Final: ≈2e-4–5e-4 with moderate jitter.
+
+Vs prev.: fewer/lower late spikes; slightly lower floor.
+
+train/loss_cycle
+
+Stage-1: falls ~0.7 → ~0.22–0.24.
+
+Stage-2: further down then flat ~0.12–0.15.
+
+Final: ≈0.12–0.15.
+
+Vs prev.: equal or a touch better at the end.
+
+train/loss_id_cycle
+
+Stage-1: steady decay ~0.55 → ~0.14–0.16.
+
+Stage-2 (visible portion): small further drop, then flat; no instability.
+
+Final (approx.): ≈0.10–0.14 (trend consistent with other heads).
+
+Vs prev.: similar or slightly lower.
+
+train/loss_id_real
+
+Stage-1: falls ~0.55 → ~0.18–0.20.
+
+Stage-2: gradual decline, stable ~0.06–0.08.
+
+Final: ≈0.06–0.07.
+
+Vs prev.: lower at convergence.
+
+train/loss_l2_crop
+
+Stage-1: decays ~0.18 → ~0.07.
+
+Stage-2: flattens ~0.05–0.06, low variance.
+
+Final: ≈0.05–0.06.
+
+Vs prev.: slightly lower.
+
+train/loss_l2_cycle
+
+Stage-1: decays ~0.17 → ~0.08–0.09.
+
+Stage-2: stabilizes ~0.06–0.07.
+
+Final: ≈0.06–0.07.
+
+Vs prev.: marginally better.
+
+train/loss_l2_real
+
+Stage-1: decays ~0.17 → ~0.09–0.10.
+
+Stage-2: flattens ~0.06–0.07 with mild jitter.
+
+Final: ≈0.06–0.07.
+
+Vs prev.: slightly lower.
+
+train/loss_lpips_crop
+
+Stage-1: falls ~0.34 → ~0.22–0.24.
+
+Stage-2: gentle slide, then flat ~0.19–0.21.
+
+Final: ≈0.19–0.21.
+
+Vs prev.: similar or a bit better; no late degradation.
+
+train/loss_lpips_cycle
+
+Stage-1: falls ~0.33 → ~0.21–0.23.
+
+Stage-2: stabilizes ~0.18–0.20.
+
+Final: ≈0.18–0.20.
+
+Vs prev.: slightly better.
+
+train/loss_lpips_real
+
+Stage-1: falls ~0.33 → ~0.22–0.24.
+
+Stage-2: flat ~0.18–0.20, mild noise.
+
+Final: ≈0.18–0.20.
+
+Vs prev.: slightly lower end-point.
+
+train/loss_real (adversarial, generator side)
+
+Stage-1: decays ~0.95 → ~0.34–0.36.
+
+Stage-2: settles ~0.26–0.28, small oscillations (typical GAN noise).
+
+Final: ≈0.26–0.27.
+
+Vs prev.: equal or a hair lower.
+
+train/loss_w_norm_cycle (weight-norm penalty)
+
+Stage-1: decays ~70 → ~26–27.
+
+Stage-2: slight upward drift then plateaus ~27–28.
+
+Final: ≈27–28.
+
+Vs prev.: higher plateau (prev. best ≈24–26). Weights are a bit larger but stable.
+
+train/loss_w_norm_real (weight-norm penalty)
+
+Stage-1: decays ~70 → ~27–28.
+
+Stage-2: mild upward creep, then flat ~28–29.
+
+Final: ≈28–29.
+
+Vs prev.: higher than the previous best (by ~2–4 units), yet not diverging.
+
+One-line summary
+
+This run improves or matches previous runs on identity, pixel, perceptual, cycle, aging, and adversarial losses, converging smoothly through Stage-2; the only trade-off is a slightly higher weight-norm plateau (larger but stable weights).
+
+Visual quality-check
+
+Even tho the tensorboard logs shows the improvements - visually the effects are poorer than from Second Full Training. The Second Full Training was visually cleaner and better match the actor without any artifacts. I would go back to previous settings as the starting point.

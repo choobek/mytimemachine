@@ -20,6 +20,7 @@ Usage:
 
 from argparse import Namespace
 import os
+import re
 import time
 from tqdm import tqdm
 from PIL import Image
@@ -57,6 +58,8 @@ def main():
                        help='Aging strength (0.0=no aging, 1.0=full aging)')
     parser.add_argument('--style_layers', type=str, default='8,9,10,11,12',
                        help='Comma-separated StyleGAN layers to modify')
+    parser.add_argument('--preserve_pose_strict', action='store_true',
+                       help='Stronger pose preservation (freeze coarse layers 0-7, weaken 8-9)')
     
     # Output options
     parser.add_argument('--create_comparisons', action='store_true',
@@ -77,9 +80,16 @@ def main():
     args = parser.parse_args()
     
     # Setup
+    # Resolve versioned output directory (e.g., inference_results/v001)
+    base_output_dir = args.output_dir.rstrip('/')
+    versioned_output_dir, version_label = resolve_versioned_output_dir(base_output_dir)
+    # From here on, use the resolved versioned directory everywhere
+    args.output_dir = versioned_output_dir
+
     print("🚀 MyTimeMachine Unified Inference")
     print(f"📁 Input: {args.input_dir}")
-    print(f"📁 Output: {args.output_dir}")
+    print(f"📁 Output base: {base_output_dir}")
+    print(f"🏷️  Version: {version_label} → {args.output_dir}")
     print(f"🎯 Target age: {args.target_age}")
     print(f"💪 Aging strength: {args.aging_strength}")
     
@@ -88,7 +98,7 @@ def main():
     
     # Load model
     print("🔄 Loading model...")
-    net, opts = load_model(args.checkpoint_path)
+    net, opts = load_model(args.checkpoint_path, args=args)
     
     # Load face alignment if needed
     predictor = None
@@ -105,6 +115,27 @@ def main():
     
     print(f"✅ Complete! Processed {stats['successful']} images")
     print(f"📊 Results saved to: {args.output_dir}")
+
+
+def resolve_versioned_output_dir(base_dir: str):
+    """Create and return a new versioned output directory under base_dir.
+
+    Example:
+      base_dir='inference_results' → creates/returns 'inference_results/v001' (or next available)
+    """
+    os.makedirs(base_dir, exist_ok=True)
+    # Find existing version subdirectories matching vNNN
+    existing = [d for d in os.listdir(base_dir)
+                if os.path.isdir(os.path.join(base_dir, d)) and re.match(r'^v\d{3}$', d)]
+    if existing:
+        nums = [int(d[1:]) for d in existing]
+        next_num = max(nums) + 1
+    else:
+        next_num = 1
+    version_label = f"v{next_num:03d}"
+    full_path = os.path.join(base_dir, version_label)
+    os.makedirs(full_path, exist_ok=True)
+    return full_path, version_label
 
 
 def setup_output_directories(args):
@@ -128,16 +159,27 @@ def setup_output_directories(args):
             os.makedirs(os.path.join(args.output_dir, f"age_{age}", "comparisons"), exist_ok=True)
 
 
-def load_model(checkpoint_path):
-    """Load the trained model"""
+def load_model(checkpoint_path, args=None):
+    """Load the trained model ensuring runtime args override ckpt opts.
+
+    The ckpt stores training-time `opts`, including a `checkpoint_path` that often
+    points to the base SAM model. During inference we must override this with the
+    user-provided `checkpoint_path` (and any other relevant runtime args) so the
+    correct personalized checkpoint is loaded.
+    """
     ckpt = torch.load(checkpoint_path, map_location='cpu')
-    opts = ckpt['opts']
-    opts = Namespace(**opts)
-    
+    opts_dict = ckpt['opts']
+    # Ensure the correct checkpoint path is used (do NOT keep the one saved in ckpt opts)
+    opts_dict['checkpoint_path'] = checkpoint_path
+    # Optionally merge additional runtime args that downstream code might rely on
+    # Do not override architecture-critical fields (e.g., output_size).
+    # Keep only the explicit checkpoint_path override.
+    opts = Namespace(**opts_dict)
+
     net = pSp(opts)
     net.eval()
     net.cuda()
-    
+
     return net, opts
 
 
@@ -194,7 +236,7 @@ def process_images(net, opts, predictor, args):
                 
                 result_image = run_unified_inference(
                     aligned_image, age_transformer, net, opts, 
-                    args.aging_strength, style_layers, args.output_size
+                    args.aging_strength, style_layers, args.output_size, args.preserve_pose_strict
                 )
                 
                 processing_time = time.time() - start_time
@@ -241,7 +283,7 @@ def load_and_align_image(image_path, predictor, skip_alignment):
         return None, False
 
 
-def run_unified_inference(aligned_image, age_transformer, net, opts, aging_strength, style_layers, output_size):
+def run_unified_inference(aligned_image, age_transformer, net, opts, aging_strength, style_layers, output_size, preserve_pose_strict=False):
     """Run inference with tunable aging strength"""
     
     # Prepare input tensor
@@ -266,14 +308,25 @@ def run_unified_inference(aligned_image, age_transformer, net, opts, aging_stren
         _, aged_latents = net(input_cuda, return_latents=True, randomize_noise=False)
         _, identity_latents = net(identity_input, return_latents=True, randomize_noise=False)
         
-        # Blend latents selectively
-        hybrid_latents = aged_latents.clone()
-        for layer_idx in style_layers:
-            if layer_idx < hybrid_latents.shape[1]:
-                hybrid_latents[:, layer_idx] = (
-                    (1 - aging_strength) * identity_latents[:, layer_idx] + 
-                    aging_strength * aged_latents[:, layer_idx]
-                )
+        # Start from identity latents to better preserve pose/eye direction
+        hybrid_latents = identity_latents.clone()
+        n_styles = hybrid_latents.shape[1]
+        selected = set(style_layers)
+        for i in range(n_styles):
+            if preserve_pose_strict:
+                # Freeze coarse (0-7), weaken transition (8-9), allow edits mid (10-12), limit fine (>=13)
+                if i <= 7:
+                    alpha = 0.0
+                elif 8 <= i <= 9:
+                    alpha = aging_strength * 0.3
+                elif 10 <= i <= 12:
+                    alpha = aging_strength
+                else:
+                    alpha = min(aging_strength, 0.4)
+            else:
+                alpha = aging_strength if i in selected else 0.0
+            if alpha > 0:
+                hybrid_latents[:, i] = (1 - alpha) * identity_latents[:, i] + alpha * aged_latents[:, i]
         
         # Generate final image
         result_batch, _ = net.decoder([hybrid_latents], input_is_latent=True, randomize_noise=False)

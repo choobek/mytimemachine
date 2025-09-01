@@ -1,0 +1,1 @@
+python scripts/inference_unified.py   --checkpoint_path experiments/full_training_run/00018/checkpoints/iteration_41000.pt   --input_dir data/inference_aligned   --output_dir inference_results   --target_age 45   --aging_strength 1   --create_coupled   --skip_alignment --output_size 1024
