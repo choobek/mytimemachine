@@ -160,7 +160,8 @@ class Coach:
 
 				# Validation related
 				val_loss_dict = None
-				if self.global_step % self.opts.val_interval == 0 or self.global_step == self.opts.max_steps:
+				val_start_step = int(getattr(self.opts, 'val_start_step', 0) or 0)
+				if (not getattr(self.opts, 'disable_validation', False)) and (self.global_step >= val_start_step) and (self.global_step % self.opts.val_interval == 0 or self.global_step == self.opts.max_steps):
 					val_loss_dict = self.validate()
 					if val_loss_dict and (self.best_val_loss is None or val_loss_dict['loss'] < self.best_val_loss):
 						self.best_val_loss = val_loss_dict['loss']
@@ -180,20 +181,45 @@ class Coach:
 
 	def validate(self):
 		self.net.eval()
+		# Snapshot RNG states so validation randomness does not influence training
+		_py_state = random.getstate()
+		_torch_state = torch.get_rng_state()
+		_cuda_states = None
+		try:
+			_cuda_states = torch.cuda.get_rng_state_all()
+		except Exception:
+			pass
+		# Optional deterministic validation
+		deterministic = bool(getattr(self.opts, 'val_deterministic', False))
+		if deterministic:
+			seed = 12345
+			random.seed(seed)
+			torch.manual_seed(seed)
+			torch.cuda.manual_seed_all(seed)
 		agg_loss_dict = []
+		max_batches = int(getattr(self.opts, 'val_max_batches', 0) or 0)
 		for batch_idx, batch in enumerate(self.test_dataloader):
 			x, y, *_ = batch
 			with torch.no_grad():
 				x, y = x.to(self.device).float(), y.to(self.device).float()
 
-				input_ages = self.aging_loss.extract_ages(x) / 100.
-
-				# perform no aging in 33% of the time
-				no_aging = random.random() <= (1. / 3)
-				if no_aging:
+				# Validation mode: optional reconstruction-only (no aging)
+				if bool(getattr(self.opts, 'val_disable_aging', False)):
+					input_ages = self.aging_loss.extract_ages(x) / 100.
 					x_input = self.__set_target_to_source(x=x, input_ages=input_ages)
+					no_aging = True
 				else:
-					x_input = [self.age_transformer(img.cpu()).to(self.device) for img in x]
+					input_ages = self.aging_loss.extract_ages(x) / 100.
+					# no randomness if deterministic
+					if deterministic:
+						no_aging = True
+						x_input = self.__set_target_to_source(x=x, input_ages=input_ages)
+					else:
+						no_aging = random.random() <= (1. / 3)
+						if no_aging:
+							x_input = self.__set_target_to_source(x=x, input_ages=input_ages)
+						else:
+							x_input = [self.age_transformer(img.cpu()).to(self.device) for img in x]
 
 				x_input = torch.stack(x_input)
 				target_ages = x_input[:, -1, 0, 0]
@@ -229,16 +255,26 @@ class Coach:
 			self.parse_and_log_images(id_logs, x, y, y_hat, y_recovered, title='images/test/faces',
 									  subscript='{:04d}'.format(batch_idx))
 
-			# For first step just do sanity test on small amount of data
+			# Early-exit caps for validation cost
 			if self.global_step == 0 and batch_idx >= 4:
 				self.net.train()
 				return None  # Do not log, inaccurate in first batch
+			if max_batches > 0 and (batch_idx + 1) >= max_batches:
+				break
 
 		loss_dict = train_utils.aggregate_loss_dict(agg_loss_dict)
 		self.log_metrics(loss_dict, prefix='test')
 		self.print_metrics(loss_dict, prefix='test')
 
 		self.net.train()
+		# Restore RNG states
+		random.setstate(_py_state)
+		torch.set_rng_state(_torch_state)
+		try:
+			if _cuda_states is not None:
+				torch.cuda.set_rng_state_all(_cuda_states)
+		except Exception:
+			pass
 		return loss_dict
 
 	def checkpoint_me(self, loss_dict, is_best):

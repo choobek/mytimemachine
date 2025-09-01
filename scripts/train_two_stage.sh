@@ -114,6 +114,10 @@ run_stage1() {
     --min_lr "$MIN_LR" \
     --grad_clip_norm "$GRAD_CLIP_NORM" \
     --nan_guard \
+    --val_disable_aging \
+    --val_deterministic \
+    --val_max_batches 2 \
+    --val_start_step 2000 \
     --extrapolation_start_step "$EXTRAPOLATION_START_STEP_S1" \
     --extrapolation_prob_start "$EXTRAPOLATION_PROB_START_S1" \
     --extrapolation_prob_end "$EXTRAPOLATION_PROB_END_S1" \
@@ -163,6 +167,10 @@ run_stage2() {
     --min_lr "$MIN_LR" \
     --grad_clip_norm "$GRAD_CLIP_NORM" \
     --nan_guard \
+    --val_disable_aging \
+    --val_deterministic \
+    --val_max_batches 2 \
+    --val_start_step 2000 \
     --resume_checkpoint "$resume_ckpt" \
     --train_decoder \
     --max_steps "$MAX_STEPS_S2" \

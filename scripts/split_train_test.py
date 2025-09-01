@@ -53,6 +53,8 @@ def main() -> None:
                     help="Output directory for test images")
     ap.add_argument("--test_ratio", type=float, default=0.10,
                     help="Fraction of images to allocate to test set (0-1)")
+    ap.add_argument("--clear_output", action="store_true",
+                    help="Clear train_dir and test_dir before copying")
     ap.add_argument("--seed", type=int, default=42, help="Random seed")
     args = ap.parse_args()
 
@@ -65,6 +67,12 @@ def main() -> None:
     if not source_dir.exists():
         raise SystemExit(f"[err] Source dir does not exist: {source_dir}")
 
+    # Optionally clear prior contents to avoid duplicates
+    if args.clear_output:
+        if train_dir.exists():
+            shutil.rmtree(train_dir)
+        if test_dir.exists():
+            shutil.rmtree(test_dir)
     ensure_dir(train_dir)
     ensure_dir(test_dir)
 

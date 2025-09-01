@@ -95,8 +95,20 @@ class TrainOptions:
                                  help='Interval for logging metrics to tensorboard')
         self.parser.add_argument('--val_interval', default=1000, type=int,
                                  help='Validation interval')
+        self.parser.add_argument('--val_start_step', default=0, type=int,
+                                 help='Skip validation until this global step')
         self.parser.add_argument('--save_interval', default=2000, type=int,
                                  help='Model checkpoint interval')
+
+        # validation control
+        self.parser.add_argument('--disable_validation', action='store_true',
+                                 help='Disable validation and test logging during training')
+        self.parser.add_argument('--val_disable_aging', action='store_true',
+                                 help='Validation uses reconstruction (no aging) for stability')
+        self.parser.add_argument('--val_max_batches', default=0, type=int,
+                                 help='If >0, limit validation to this many batches per run')
+        self.parser.add_argument('--val_deterministic', action='store_true',
+                                 help='Use fixed RNG seeds during validation for reproducibility')
 
         # arguments for aging
         self.parser.add_argument('--target_age', default=None, type=str,
