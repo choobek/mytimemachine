@@ -34,12 +34,14 @@ L2_LAMBDA_AGING_S1=0.25
 L2_LAMBDA_CROP_S1=0.5
 W_NORM_LAMBDA_S1=0.003
 AGING_LAMBDA_S1=5
-CYCLE_LAMBDA_S1=2
+# Slightly relax cycle to avoid overemphasis per run 5 plan
+CYCLE_LAMBDA_S1=1.5
 ADAPTIVE_W_NORM_LAMBDA_S1=20
 EXTRAPOLATION_START_STEP_S1=3000
 EXTRAPOLATION_PROB_START_S1=0.0
 EXTRAPOLATION_PROB_END_S1=0.5
-MAX_STEPS_S1=30000
+# Shorten Stage 1 per run 5 plan
+MAX_STEPS_S1=25000
 
 # Stage 2 hparams (replicate 00018)
 ID_LAMBDA_S2=$ID_LAMBDA_S1
@@ -55,7 +57,8 @@ AGING_LAMBDA_S2=$AGING_LAMBDA_S1
 AGING_LAMBDA_DECODER_SCALE_S2=0.5
 CYCLE_LAMBDA_S2=$CYCLE_LAMBDA_S1
 ADAPTIVE_W_NORM_LAMBDA_S2=$ADAPTIVE_W_NORM_LAMBDA_S1
-LEARNING_RATE_S2=5e-5
+# Reduce Stage 2 LR for stability per run 5 plan
+LEARNING_RATE_S2=3e-5
 MAX_STEPS_S2=50000
 
 log() { printf "[two-stage][%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -125,9 +128,10 @@ run_stage1() {
     --max_steps "$MAX_STEPS_S1"
 }
 
-find_latest_30k_ckpt() {
-  # Assume pattern like experiments/full_training_run/000XX/checkpoints/iteration_30000.pt
-  find "$EXP_DIR" -type f -name 'iteration_30000.pt' -path '*/checkpoints/*' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -n 1 | awk '{print $2}'
+find_latest_ckpt_for_steps() {
+  local steps="$1"
+  # Example: experiments/full_training_run/000XX/checkpoints/iteration_${steps}.pt
+  find "$EXP_DIR" -type f -name "iteration_${steps}.pt" -path '*/checkpoints/*' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -n 1 | awk '{print $2}'
 }
 
 run_stage2() {
@@ -182,10 +186,10 @@ main() {
   # Using explicit python binary from the conda env; no shell activation required
   run_stage1
 
-  # Find newest 30k checkpoint from this Stage 1 run
-  resume_ckpt=$(find_latest_30k_ckpt || true)
+  # Find newest Stage 1 checkpoint for the configured MAX_STEPS_S1
+  resume_ckpt=$(find_latest_ckpt_for_steps "$MAX_STEPS_S1" || true)
   if [[ -z "${resume_ckpt:-}" || ! -f "$resume_ckpt" ]]; then
-    log "ERROR: Could not locate 30k checkpoint under $EXP_DIR"
+    log "ERROR: Could not locate ${MAX_STEPS_S1} checkpoint under $EXP_DIR"
     exit 1
   fi
 

@@ -255,13 +255,42 @@ Notes:
 - Validation and test logging are enabled in `training/coach_aging_orig.py` (val_interval=500).
 - Hyperparameters replicate the best prior runs: Stage 1 ≈ 00016, Stage 2 ≈ 00018.
 
-Stage 1 — replicate 00016 (encoder+decoder, 30k steps)
+training 00025 - Stage 1 — replicate 00016 (encoder+decoder, 30k steps)
 ```bash
 bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 2 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 20 --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard --extrapolation_start_step 3000 --extrapolation_prob_start 0.0 --extrapolation_prob_end 0.5 --train_encoder --max_steps 30000 | cat"
 ```
 
-Stage 2 — replicate 00018 (decoder-only, 50k steps)
+training 00026 - Stage 2 — replicate 00018 (decoder-only, 50k steps)
 Run after Stage 1 completes; replace 000XX with the new Stage 1 folder name.
 ```bash
 bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 2 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 20 --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_30000.pt --train_decoder --max_steps 50000 --learning_rate 0.00005 | cat"
+```
+
+Fifth training (2-staged) — low-risk stability tweaks
+-------------------------------------
+Goal: replicate fourth training setup via `scripts/train_two_stage.sh` with:
+- Stage 1 steps: 25000 (was 30000)
+- Stage 2 learning rate: 3e-5 (was 5e-5)
+- Cycle lambda Stage 1: 1.5 (was 2)
+
+Script deltas in `scripts/train_two_stage.sh`:
+- `MAX_STEPS_S1=25000`
+- `LEARNING_RATE_S2=3e-5`
+- `CYCLE_LAMBDA_S1=1.5`
+- Resume logic generalized to find `iteration_${MAX_STEPS_S1}.pt`
+
+Run both stages automatically:
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && ./scripts/train_two_stage.sh | cat"
+```
+
+If running stages manually, example commands:
+- Stage 1 (25k):
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 1.5 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 20 --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard --val_disable_aging --val_deterministic --val_max_batches 2 --val_start_step 2000 --extrapolation_start_step 3000 --extrapolation_prob_start 0.0 --extrapolation_prob_end 0.5 --train_encoder --max_steps 25000 | cat"
+```
+
+- Stage 2 (resume 25k, 50k steps, LR 3e-5):
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 --aging_lambda 5 --aging_lambda_decoder_scale 0.5 --cycle_lambda 1.5 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 20 --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard --val_disable_aging --val_deterministic --val_max_batches 2 --val_start_step 2000 --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_25000.pt --train_decoder --max_steps 50000 --learning_rate 0.00003 | cat"
 ```
