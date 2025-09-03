@@ -335,3 +335,35 @@ Takeaways / next steps:
 - Keep interpolation-only (no extrapolation) and current regularization; weight-norm remained stable in both stages.
 
 
+
+Seventh training (2-staged) — identity preservation focus
+-------------------------------------
+Goal: strengthen identity preservation without reintroducing artifacts. Build on the Fifth/Sixth setup (stable visuals), extend Stage 1 to solidify identity, lightly refine in Stage 2.
+
+Plan highlights:
+- Coach: COACH=orig_nn (nearest-neighbor ID regularizer active on interpolation only)
+- Disable extrapolation (in-domain only): extrapolation_start_step=1000000000
+- Keep stable regs: adaptive_w_norm_lambda=20, w_norm_lambda=0.003, cycle_lambda=1.5, lpips_lambda_crop=0.8, l2_lambda=0.1, l2_lambda_crop=0.5
+
+Stage 1 (encoder+decoder)
+- Steps: 35,000
+- id_lambda: 0.35
+- nearest_neighbor_id_loss_lambda: 0.2
+- Other hypers: as in Fifth/Sixth; validation enabled as before
+
+Stage 2 (decoder-only)
+- Steps: 45,000 (resume from 35k)
+- learning_rate: 3e-5
+- id_lambda: 0.3
+- nearest_neighbor_id_loss_lambda: 0.05
+- w_norm_lambda_decoder_scale: 0.5, aging_lambda_decoder_scale: 0.5
+
+How to run (updated two-stage script):
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && ./scripts/train_two_stage.sh | cat"
+```
+
+Monitoring
+- Track identity: train/id_improve_real should rise toward ≥0.02 by ~30–35k; train/loss_id_real should trend ≤0.40 late S1 and ≤0.38 in S2.
+- Visual checks: preserve facial structure (eyes, mouth asymmetry, moles), avoid generic-face drift.
+- If identity plateaus late in S1: briefly raise nearest_neighbor_id_loss_lambda to 0.25 for final 3–5k of S1, then keep 0.05 in S2.

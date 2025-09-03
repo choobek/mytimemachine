@@ -25,8 +25,8 @@ GRAD_CLIP_NORM=1.0
 WARMUP_STEPS=500
 MIN_LR=5e-7
 
-# Stage 1 hparams (replicate 00016)
-ID_LAMBDA_S1=0.3
+# Stage 1 hparams (Seventh training plan)
+ID_LAMBDA_S1=0.35
 LPIPS_LAMBDA_S1=0.1
 LPIPS_LAMBDA_AGING_S1=0.1
 LPIPS_LAMBDA_CROP_S1=0.8
@@ -38,16 +38,16 @@ AGING_LAMBDA_S1=5
 # Slightly relax cycle to avoid overemphasis per run 5 plan
 CYCLE_LAMBDA_S1=1.5
 ADAPTIVE_W_NORM_LAMBDA_S1=20
-# Sixth training: disable extrapolation (interpolation-only) and add NN-ID reg
+# Disable extrapolation (interpolation-only) and add NN-ID reg
 EXTRAPOLATION_START_STEP_S1=1000000000
 EXTRAPOLATION_PROB_START_S1=0.0
 EXTRAPOLATION_PROB_END_S1=0.5
-NEAREST_NEIGHBOR_ID_LAMBDA=0.1
-# Shorten Stage 1 per run 5 plan
-MAX_STEPS_S1=25000
+NEAREST_NEIGHBOR_ID_LAMBDA_S1=0.2
+# Extend Stage 1 duration for identity convergence
+MAX_STEPS_S1=35000
 
-# Stage 2 hparams (replicate 00018)
-ID_LAMBDA_S2=$ID_LAMBDA_S1
+# Stage 2 hparams (Seventh training plan)
+ID_LAMBDA_S2=0.3
 LPIPS_LAMBDA_S2=$LPIPS_LAMBDA_S1
 LPIPS_LAMBDA_AGING_S2=$LPIPS_LAMBDA_AGING_S1
 LPIPS_LAMBDA_CROP_S2=$LPIPS_LAMBDA_CROP_S1
@@ -60,9 +60,10 @@ AGING_LAMBDA_S2=$AGING_LAMBDA_S1
 AGING_LAMBDA_DECODER_SCALE_S2=0.5
 CYCLE_LAMBDA_S2=$CYCLE_LAMBDA_S1
 ADAPTIVE_W_NORM_LAMBDA_S2=$ADAPTIVE_W_NORM_LAMBDA_S1
-# Reduce Stage 2 LR for stability per run 5 plan
+# Reduce Stage 2 LR for stability and shorten total steps
 LEARNING_RATE_S2=3e-5
-MAX_STEPS_S2=50000
+MAX_STEPS_S2=45000
+NEAREST_NEIGHBOR_ID_LAMBDA_S2=0.05
 
 log() { printf "[two-stage][%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
@@ -127,7 +128,7 @@ run_stage1() {
     --extrapolation_start_step "$EXTRAPOLATION_START_STEP_S1" \
     --extrapolation_prob_start "$EXTRAPOLATION_PROB_START_S1" \
     --extrapolation_prob_end "$EXTRAPOLATION_PROB_END_S1" \
-    --nearest_neighbor_id_loss_lambda "$NEAREST_NEIGHBOR_ID_LAMBDA" \
+    --nearest_neighbor_id_loss_lambda "$NEAREST_NEIGHBOR_ID_LAMBDA_S1" \
     --train_encoder \
     --max_steps "$MAX_STEPS_S1"
 }
@@ -182,7 +183,7 @@ run_stage2() {
     --extrapolation_start_step "$EXTRAPOLATION_START_STEP_S1" \
     --extrapolation_prob_start "$EXTRAPOLATION_PROB_START_S1" \
     --extrapolation_prob_end "$EXTRAPOLATION_PROB_END_S1" \
-    --nearest_neighbor_id_loss_lambda "$NEAREST_NEIGHBOR_ID_LAMBDA" \
+    --nearest_neighbor_id_loss_lambda "$NEAREST_NEIGHBOR_ID_LAMBDA_S2" \
     --resume_checkpoint "$resume_ckpt" \
     --train_decoder \
     --max_steps "$MAX_STEPS_S2" \
