@@ -7,6 +7,7 @@ ENV_NAME="mytimemachine"
 EXP_DIR_REL="experiments/full_training_run"
 EXP_DIR="$BASE_DIR/$EXP_DIR_REL"
 PYTHON_BIN="/home/wczub/miniforge3/envs/mytimemachine/bin/python"
+COACH="orig_nn"
 
 # Shared hparams
 WORKERS=2
@@ -37,9 +38,11 @@ AGING_LAMBDA_S1=5
 # Slightly relax cycle to avoid overemphasis per run 5 plan
 CYCLE_LAMBDA_S1=1.5
 ADAPTIVE_W_NORM_LAMBDA_S1=20
-EXTRAPOLATION_START_STEP_S1=3000
+# Sixth training: disable extrapolation (interpolation-only) and add NN-ID reg
+EXTRAPOLATION_START_STEP_S1=1000000000
 EXTRAPOLATION_PROB_START_S1=0.0
 EXTRAPOLATION_PROB_END_S1=0.5
+NEAREST_NEIGHBOR_ID_LAMBDA=0.1
 # Shorten Stage 1 per run 5 plan
 MAX_STEPS_S1=25000
 
@@ -86,7 +89,7 @@ ensure_conda() {
 run_stage1() {
   log "Starting Stage 1 to ${MAX_STEPS_S1} steps"
   PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
-  "$PYTHON_BIN" "$BASE_DIR/scripts/train.py" \
+  COACH="$COACH" "$PYTHON_BIN" "$BASE_DIR/scripts/train.py" \
     --dataset_type ffhq_aging \
     --workers "$WORKERS" \
     --batch_size "$BATCH_SIZE" \
@@ -124,6 +127,7 @@ run_stage1() {
     --extrapolation_start_step "$EXTRAPOLATION_START_STEP_S1" \
     --extrapolation_prob_start "$EXTRAPOLATION_PROB_START_S1" \
     --extrapolation_prob_end "$EXTRAPOLATION_PROB_END_S1" \
+    --nearest_neighbor_id_loss_lambda "$NEAREST_NEIGHBOR_ID_LAMBDA" \
     --train_encoder \
     --max_steps "$MAX_STEPS_S1"
 }
@@ -138,7 +142,7 @@ run_stage2() {
   local resume_ckpt="$1"
   log "Starting Stage 2 to ${MAX_STEPS_S2} steps from: $resume_ckpt"
   PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
-  "$PYTHON_BIN" "$BASE_DIR/scripts/train.py" \
+  COACH="$COACH" "$PYTHON_BIN" "$BASE_DIR/scripts/train.py" \
     --dataset_type ffhq_aging \
     --workers "$WORKERS" \
     --batch_size "$BATCH_SIZE" \
@@ -175,6 +179,10 @@ run_stage2() {
     --val_deterministic \
     --val_max_batches 2 \
     --val_start_step 2000 \
+    --extrapolation_start_step "$EXTRAPOLATION_START_STEP_S1" \
+    --extrapolation_prob_start "$EXTRAPOLATION_PROB_START_S1" \
+    --extrapolation_prob_end "$EXTRAPOLATION_PROB_END_S1" \
+    --nearest_neighbor_id_loss_lambda "$NEAREST_NEIGHBOR_ID_LAMBDA" \
     --resume_checkpoint "$resume_ckpt" \
     --train_decoder \
     --max_steps "$MAX_STEPS_S2" \

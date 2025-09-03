@@ -5,16 +5,31 @@ import os
 import json
 import sys
 import pprint
+import importlib
 
 sys.path.append(".")
 sys.path.append("..")
 
 from options.train_options import TrainOptions
-# todo: choose the coach
-# from training.coach_aging_tune_psp import Coach
-from training.coach_aging_orig import Coach
-# from training.coach_aging_tune_no_psp import Coach
-# from training.coach_aging_delta import Coach
+# Coach selection:
+# - training.coach_aging_orig.Coach            (baseline)
+# - training.coach_aging_orig_nn.Coach         (baseline + NN ID regularizer during interpolation)
+# - training.coach_aging_tune_no_psp.Coach     (tuned multi-optimizer version)
+# - training.coach_aging_tune_psp.Coach        (tuned with pretrained encoder)
+# - training.coach_aging_delta.Coach           (delta-based blender)
+COACH_MODULE_MAP = {
+	'orig': 'training.coach_aging_orig',
+	'orig_nn': 'training.coach_aging_orig_nn',
+	'tune_no_psp': 'training.coach_aging_tune_no_psp',
+	'tune_psp': 'training.coach_aging_tune_psp',
+	'delta': 'training.coach_aging_delta',
+}
+
+def get_coach_class():
+	name = os.environ.get('COACH', 'orig')
+	module_name = COACH_MODULE_MAP.get(name, COACH_MODULE_MAP['orig'])
+	module = importlib.import_module(module_name)
+	return getattr(module, 'Coach')
 
 import re
 
@@ -37,7 +52,8 @@ def main():
 	with open(os.path.join(opts.exp_dir, 'opt.json'), 'w') as f:
 		json.dump(opts_dict, f, indent=4, sort_keys=True)
 
-	coach = Coach(opts)
+	CoachClass = get_coach_class()
+	coach = CoachClass(opts)
 	coach.train()
 
 # import tempfile

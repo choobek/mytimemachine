@@ -282,7 +282,7 @@ Script deltas in `scripts/train_two_stage.sh`:
 Run both stages automatically:
 ```bash
 bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && ./scripts/train_two_stage.sh | cat"
-```
+``` 
 
 If running stages manually, example commands:
 - Stage 1 (25k):
@@ -294,3 +294,44 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate my
 ```bash
 bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 --aging_lambda 5 --aging_lambda_decoder_scale 0.5 --cycle_lambda 1.5 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 20 --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard --val_disable_aging --val_deterministic --val_max_batches 2 --val_start_step 2000 --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_25000.pt --train_decoder --max_steps 50000 --learning_rate 0.00003 | cat"
 ```
+
+Sixth training (2-staged) — interpolation personalization via NN-ID regularizer
+-------------------------------------
+Goal: keep the Fifth setup but add a nearest-neighbor identity regularizer during interpolation only, to better personalize to the target actor near age ~40. Disable extrapolation to remain in-domain.
+
+Changes vs Fifth:
+- Use new coach `training.coach_aging_orig_nn.Coach` via `COACH=orig_nn`.
+- Add `--nearest_neighbor_id_loss_lambda 0.1`.
+- Disable extrapolation: `--extrapolation_start_step 1000000000` (probability flags kept but inactive).
+- All other hypers identical to Fifth.
+
+Two-stage script (updated): `scripts/train_two_stage.sh`
+- COACH="orig_nn"
+- NEAREST_NEIGHBOR_ID_LAMBDA=0.1
+- EXTRAPOLATION_START_STEP_S1=1000000000
+
+Run both stages automatically:
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && ./scripts/train_two_stage.sh | cat"
+```
+
+Results and notes (00031 → 00032):
+- Stage 1 — 00031 (encoder+decoder, 25k steps, COACH=orig_nn)
+  - Key deltas vs Fifth: interpolation-only (extrapolation disabled), nearest-neighbor ID loss λ=0.1; otherwise identical hypers to Fifth.
+  - Important hypers: id_lambda=0.3, lpips_lambda_crop=0.8, l2_lambda=0.1, l2_lambda_crop=0.5, w_norm_lambda=0.003, cycle_lambda=1.5, adaptive_w_norm_lambda=20, warmup_steps=500, min_lr=5e-7; validation enabled (val_interval=500, deterministic, val_max_batches=2, val_disable_aging).
+  - Best val loss: 1.022 at steps 19,500 and 24,500 (final 25,000 → 1.032).
+  - Metrics at best (≈24,500): loss_id_real≈0.4135, loss_l2_real≈0.0887, loss_lpips_real≈0.3199, loss_lpips_crop≈0.2153, loss_l2_crop≈0.0815, loss_w_norm_real≈45.78; total loss≈1.022.
+
+- Stage 2 — 00032 (decoder-only, resume 25k → 50k, LR=3e-5)
+  - Settings: train_decoder only; w_norm_lambda_decoder_scale=0.5, aging_lambda_decoder_scale=0.5; nearest-neighbor ID loss kept at λ=0.1; extrapolation disabled.
+  - Best val loss: 0.868 at step 42,000 (final 50,000 → 0.875; early best at 25,000 was 0.888).
+  - Metrics at best (42,000): loss_id_real≈0.3993, loss_l2_real≈0.0877, loss_lpips_real≈0.3155, loss_lpips_crop≈0.2114, loss_l2_crop≈0.0805, loss_w_norm_real≈45.69; total loss≈0.868. Improvements after ~42k were marginal/oscillatory.
+
+- Visual assessment (manual): Stage 1 quickly reached high target similarity; Stage 2 added little visible improvement. Stage-1 outputs were almost as good as late Stage-2.
+
+Takeaways / next steps:
+- Extend Stage 1 duration (e.g., 30k–40k) to let encoder+decoder converge closer to the sweet spot before switching to decoder-only.
+- Optionally shorten Stage 2 or run it with a brief LR plateau then anneal; consider modestly increasing NN-ID λ during Stage 1 only.
+- Keep interpolation-only (no extrapolation) and current regularization; weight-norm remained stable in both stages.
+
+
