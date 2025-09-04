@@ -396,6 +396,7 @@ Recommendations:
 - Allocate more budget to Stage 1 (e.g., 38–40k) and shorten Stage 2 (e.g., 40–43k). Most identity gains manifest during Stage 1.
 - If identity plateaus late Stage 1, briefly bump NN-ID λ to 0.25 for the last 3–5k, then revert to 0.05 for Stage 2.
 - Keep current regularization and interpolation-only setting; both correlate with stable, artifact-free training here.
+
 Eighth training (2-staged, start from scratch on second computer) — Seventh + medium improvements
 -------------------------------------
 Goal: Start Stage 1 from step 0 with COACH=orig_nn and NN-ID regularizer, extrapolation disabled. Apply phased tweaks in Stage 1 (mid-run LPIPS/L2 tightening; late NN-ID bump). Automatically continue to Stage 2 when Stage 1 reaches 35k.
@@ -457,3 +458,79 @@ Actionable follow‑ups:
 - Consider extending S1 to 38–40k when compute allows; most identity gains happened in S1.
 - Keep S2 short (e.g., 40–43k target) or use a brief LR plateau at 3e‑5 then anneal.
 - If w‑norm >52 coincides with any artifacts in a future run, temporarily raise w_norm_lambda to 0.0035 for 1–2k steps, then revert.
+
+Ninth training (2-staged) — identity focus with age-aware contrastive loss
+-------------------------------------
+Rationale:
+- Most identity gains occur in Stage 1 (encoder+decoder). Keep Stage 1 extended; use a lighter Stage 2 for refinement.
+- Use the new impostor-only, age-aware contrastive loss lightly, with higher temperature and moderate negatives to avoid over-canonical pose/lighting.
+- Keep NN-ID alongside contrastive; both target identity from different angles (pull vs. repel).
+
+Key settings:
+- Coach: orig_nn
+- Contrastive: λ S1=0.04, S2=0.02; mb_k=32; τ=0.12; age window=[35,45]; neighbor_radius=0
+- NN-ID: λ S1=0.10, S2=0.05
+- In-domain only (disable extrapolation in S1); keep stable regs and LR schedule
+
+Stage 1 — 30k steps (encoder+decoder)
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_encoder \
+  --batch_size 2 --workers 2 \
+  --target_age uniform_random \
+  --max_steps 30000 --image_interval 1000 \
+  --board_interval 50 --val_interval 500 --val_deterministic --val_max_batches 2 \
+  --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 \
+  --extrapolation_start_step 1000000000 \
+  --nearest_neighbor_id_loss_lambda 0.1 \
+  --contrastive_id_lambda 0.04 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt \
+  --mb_k 32 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 \
+  --mb_bin_neighbor_radius 0 \
+  --mb_temperature 0.12 | cat"
+```
+
+Stage 2 — resume to 60k steps (decoder-only)
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_decoder \
+  --batch_size 2 --workers 2 \
+  --target_age uniform_random \
+  --max_steps 60000 --image_interval 1000 \
+  --board_interval 50 --val_interval 500 --val_deterministic --val_max_batches 2 \
+  --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 \
+  --aging_lambda 5 --aging_lambda_decoder_scale 0.5 \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 \
+  --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_30000.pt \
+  --nearest_neighbor_id_loss_lambda 0.05 \
+  --contrastive_id_lambda 0.02 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt \
+  --mb_k 32 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 \
+  --mb_bin_neighbor_radius 0 \
+  --mb_temperature 0.12 | cat"
+```
+
+Monitoring:
+- Identity: train/id_improve_real → ≥0 late S1; loss_id_real ≤0.40 late S1, ≤0.38 in S2
+- Contrastive: loss_contrastive_id non-zero and decaying; mb_applied_ratio ~0.2–0.4 with uniform ages
+- Pose/lighting: should remain less “locked” vs heavy λ runs
+
+If pose/lighting too fixed:
+- S1: contrastive_id_lambda → 0.03; τ → 0.15; mb_k → 16
+- S2: contrastive_id_lambda → 0.015

@@ -39,13 +39,17 @@ class Coach:
 		self.mse_loss = nn.MSELoss().to(self.device).eval()
 		if self.opts.lpips_lambda > 0:
 			self.lpips_loss = LPIPS(net_type='alex').to(self.device).eval()
-		# Ensure ID loss is available if used either directly or via NN regularizer
+		# Ensure ID loss is available if used directly, via NN regularizer, or via contrastive impostor loss
 		use_nn_lambda = float(getattr(self.opts, 'nearest_neighbor_id_loss_lambda', 0.0) or 0.0) > 0
-		if self.opts.id_lambda > 0 or use_nn_lambda:
+		use_contrastive_impostor = float(getattr(self.opts, 'contrastive_id_lambda', 0.0) or 0.0) > 0
+		if self.opts.id_lambda > 0 or use_nn_lambda or use_contrastive_impostor:
 			self.id_loss = id_loss.IDLoss().to(self.device).eval()
 		if self.opts.w_norm_lambda > 0:
 			self.w_norm_loss = w_norm.WNormLoss(opts=self.opts)
 		if self.opts.aging_lambda > 0:
+			self.aging_loss = AgingLoss(self.opts)
+		# Ensure aging_loss is available when needed by training/NN-ID regardless of lambda
+		if not hasattr(self, 'aging_loss'):
 			self.aging_loss = AgingLoss(self.opts)
 
 		# Initialize optimizer
@@ -84,6 +88,20 @@ class Coach:
 		# Load checkpoint if resuming
 		if hasattr(opts, 'resume_checkpoint') and opts.resume_checkpoint:
 			self.load_checkpoint(opts.resume_checkpoint)
+
+		# Contrastive impostor bank and options
+		self.contrastive_id_lambda = float(getattr(self.opts, 'contrastive_id_lambda', 0.0) or 0.0)
+		self.mb = None
+		mb_index_path = getattr(self.opts, 'mb_index_path', '') or ''
+		if self.contrastive_id_lambda > 0 and len(mb_index_path) > 0:
+			from training.impostor_bank import AgeMatchedImpostorBank
+			self.mb = AgeMatchedImpostorBank(mb_index_path)
+		self.mb_k = int(getattr(self.opts, 'mb_k', 64) or 64)
+		self.mb_bin_neighbor_radius = int(getattr(self.opts, 'mb_bin_neighbor_radius', 0) or 0)
+		# apply bounds are in years; None disables bound
+		self.mb_apply_min_age = getattr(self.opts, 'mb_apply_min_age', None)
+		self.mb_apply_max_age = getattr(self.opts, 'mb_apply_max_age', None)
+		self.mb_temperature = float(getattr(self.opts, 'mb_temperature', 0.07) or 0.07)
 
 		# Build optional scheduler for stability
 		self.scheduler = self._build_scheduler(self.optimizer)
@@ -502,6 +520,74 @@ class Coach:
 			aging_loss, id_logs = self.aging_loss(y_hat, y, target_ages, id_logs, label=data_type)
 			loss_dict[f'loss_aging_{data_type}'] = float(aging_loss)
 			loss += aging_loss * effective_aging_lambda
+		# Impostor-only age-aware contrastive ID loss (real pass only)
+		if (data_type == "real"):
+			apply_mask = None
+			try:
+				if self.mb is not None and self.contrastive_id_lambda > 0:
+					# Convert target ages from [0,1] to integer years [0,100]
+					target_age_years = torch.clamp((target_ages * 100.0).round().to(torch.int64), 0, 200)
+					apply_mask = torch.ones(y_hat.size(0), dtype=torch.bool, device=y_hat.device)
+					if self.mb_apply_min_age is not None:
+						apply_mask &= (target_age_years.to(y_hat.device) >= int(self.mb_apply_min_age))
+					if self.mb_apply_max_age is not None:
+						apply_mask &= (target_age_years.to(y_hat.device) <= int(self.mb_apply_max_age))
+					loss_contrast = torch.tensor(0.0, device=y_hat.device)
+					if apply_mask.any():
+						# Sample negatives for active subset on CPU (avoid cross-device mask indexing)
+						ages_cpu = target_age_years[apply_mask].detach().to("cpu")
+						negs = self.mb.sample(ages_cpu, k=self.mb_k, radius=self.mb_bin_neighbor_radius)
+						negs = negs.to(y_hat.device, non_blocking=True)
+						# Compute query embeddings with gradients flowing to generator
+						q = self.id_loss.extract_feats(y_hat[apply_mask])  # [b',512]
+						q = F.normalize(q, dim=1)
+						negs = F.normalize(negs, dim=2)
+						# Cosine similarities and log-sum-exp repel
+						sims = torch.einsum("bd,bkd->bk", q, negs) / float(self.mb_temperature)
+						loss_contrast_active = torch.logsumexp(sims, dim=1).mean()
+						loss_contrast = loss_contrast + loss_contrast_active
+						loss = loss + self.contrastive_id_lambda * loss_contrast
+						# TensorBoard scalars + loss_dict entries for console prints
+						self.logger.add_scalar("train/loss_contrastive_id", float(loss_contrast_active.item()), self.global_step)
+						ratio = float(apply_mask.float().mean().item())
+						self.logger.add_scalar("train/mb_applied_ratio", ratio, self.global_step)
+						loss_dict['loss_contrastive_id'] = float(loss_contrast_active.item())
+						loss_dict['mb_applied_ratio'] = ratio
+					else:
+						# No active samples; still log zeros for clarity
+						self.logger.add_scalar("train/loss_contrastive_id", 0.0, self.global_step)
+						self.logger.add_scalar("train/mb_applied_ratio", 0.0, self.global_step)
+						loss_dict['loss_contrastive_id'] = 0.0
+						loss_dict['mb_applied_ratio'] = 0.0
+				else:
+					# Bank disabled; log zeros
+					self.logger.add_scalar("train/loss_contrastive_id", 0.0, self.global_step)
+					# If we can compute mask without bank, base on range only
+					try:
+						target_age_years = torch.clamp((target_ages * 100.0).round().to(torch.int64), 0, 200)
+						apply_mask = torch.ones(y_hat.size(0), dtype=torch.bool, device=y_hat.device)
+						if self.mb_apply_min_age is not None:
+							apply_mask &= (target_age_years.to(y_hat.device) >= int(self.mb_apply_min_age))
+						if self.mb_apply_max_age is not None:
+							apply_mask &= (target_age_years.to(y_hat.device) <= int(self.mb_apply_max_age))
+						ratio = float(apply_mask.float().mean().item())
+						self.logger.add_scalar("train/mb_applied_ratio", ratio, self.global_step)
+						loss_dict['loss_contrastive_id'] = 0.0
+						loss_dict['mb_applied_ratio'] = ratio
+					except Exception:
+						self.logger.add_scalar("train/mb_applied_ratio", 0.0, self.global_step)
+						loss_dict['loss_contrastive_id'] = 0.0
+						loss_dict['mb_applied_ratio'] = 0.0
+			except Exception as e:
+				# Robust to any runtime issues; do not break training
+				try:
+					print(f"Warning: contrastive impostor loss error at step {self.global_step}: {e}")
+				except Exception:
+					pass
+				self.logger.add_scalar("train/loss_contrastive_id", 0.0, self.global_step)
+				self.logger.add_scalar("train/mb_applied_ratio", 0.0, self.global_step)
+				loss_dict['loss_contrastive_id'] = 0.0
+				loss_dict['mb_applied_ratio'] = 0.0
 		# Nearest-neighbor identity regularizer during interpolation only
 		nn_lambda = float(getattr(self.opts, 'nearest_neighbor_id_loss_lambda', 0.0) or 0.0)
 		if (nn_lambda > 0) and (not no_aging) and self._is_interpolation(target_ages) and (self.feats_dict is not None):
@@ -524,18 +610,21 @@ class Coach:
 
 	def parse_and_log_images(self, id_logs, x, y, y_hat, y_recovered, title, subscript=None, display_count=2):
 		im_data = []
-		for i in range(display_count):
+		# Cap display count to the smallest available across tensors and logs
+		max_i = min(display_count, int(x.size(0)), int(y.size(0)), int(y_hat.size(0)), int(y_recovered.size(0)))
+		for i in range(max_i):
 			cur_im_data = {
 				'input_face': common.tensor2im(x[i]),
 				'target_face': common.tensor2im(y[i]),
 				'output_face': common.tensor2im(y_hat[i]),
 				'recovered_face': common.tensor2im(y_recovered[i])
 			}
-			if id_logs is not None:
+			if id_logs is not None and i < len(id_logs):
 				for key in id_logs[i]:
 					cur_im_data[key] = id_logs[i][key]
 			im_data.append(cur_im_data)
-		self.log_images(title, im_data=im_data, subscript=subscript)
+		if len(im_data) > 0:
+			self.log_images(title, im_data=im_data, subscript=subscript)
 
 	def log_images(self, name, im_data, subscript=None, log_latest=False):
 		fig = common.vis_faces(im_data)
