@@ -362,8 +362,93 @@ How to run (updated two-stage script):
 ```bash
 bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && ./scripts/train_two_stage.sh | cat"
 ```
+Final results of this seventh training:
+
+Setup recap:
+- Coach: orig_nn; extrapolation disabled
+- Stage 1: id_lambda=0.35, nearest_neighbor_id_loss_lambda=0.2
+- Stage 2: id_lambda=0.3, nearest_neighbor_id_loss_lambda=0.05, learning_rate=3e-5
+- Shared: adaptive_w_norm_lambda=20, w_norm_lambda=0.003; crop LPIPS/L2 enabled
+
+Key validation (test) checkpoints:
+- Step 10k: loss_id_real≈0.409, lpips_real≈0.328, l2_real≈0.103, w_norm_real≈51.25, total≈1.134
+- Step 21k: loss_id_real≈0.390, lpips_real≈0.316, l2_real≈0.095, w_norm_real≈45.02, total≈1.034
+- Step 45k (end): loss_id_real≈0.399, lpips_real≈0.316, l2_real≈0.099, w_norm_real≈42.73, total≈0.891
+
+End-of-run training snapshot (step 45k):
+- train: loss_id_real≈0.105, lpips_real≈0.172, l2_real≈0.024, w_norm_real≈41.04, total≈0.412
+
+What improved within this run:
+- Identity: improved during Stage 1 (0.409→0.390). Stage 2 held identity roughly steady (0.399 at 45k), similar to prior runs where Stage 2 adds limited identity gains.
+- Perceptual/pixel: both tightened from 10k to 21k and remained strong through 45k (LPIPS stayed ≈0.316; L2 ≈0.099).
+- Regularization: w_norm_real decayed consistently (≈51→45→42.7), signaling healthier latent magnitudes and stable convergence.
+
+Notes on NN-ID and stability:
+- nearest_neighbor_id_loss remained active throughout (train peaks ≈0.45 without instability), supporting personalization near target ages.
+
+Recommendations:
+- Allocate more budget to Stage 1 (e.g., 38–40k) and shorten Stage 2 (e.g., 40–43k). Most identity gains manifest during Stage 1.
+- If identity plateaus late Stage 1, briefly bump NN-ID λ to 0.25 for the last 3–5k, then revert to 0.05 for Stage 2.
+- Keep current regularization and interpolation-only setting; both correlate with stable, artifact-free training here.
+
+Eighth training (2-staged, start from scratch on second computer) — Seventh + medium improvements
+-------------------------------------
+Goal: Start Stage 1 from step 0 with COACH=orig_nn and NN-ID regularizer, extrapolation disabled. Apply phased tweaks in Stage 1 (mid-run LPIPS/L2 tightening; late NN-ID bump). Automatically continue to Stage 2 when Stage 1 reaches 35k.
+
+Key settings (Stage 1 → Stage 2):
+- Coach: orig_nn
+- Stage 1 steps: 35,000; Stage 2 steps: 45,000
+- NN-ID λ: 0.2 (S1 baseline), 0.25 for 30k→35k, 0.05 in S2
+- id_lambda: 0.35 (S1), 0.30 (S2)
+- cycle_lambda: 1.5; adaptive_w_norm_lambda: 20; w_norm_lambda: 0.003
+- lpips_lambda_crop: 0.8 baseline; 0.9 for 20k→30k
+- l2_lambda: 0.1 baseline; 0.08 for 20k→30k; restore at 30k
+- l2_lambda_crop: 0.5 baseline; 0.4 for 20k→30k; restore at 30k
+- Extrapolation disabled: extrapolation_start_step=1000000000
+- Learning rate S2: 3e-5
+
+Run both stages automatically from scratch:
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && ./scripts/train_two_stage.sh | cat"
+```
+
+Notes:
+- Stage 1 runs in three phases: 0→20k (baseline), 20k→30k (tighten LPIPS/L2), 30k→35k (NN-ID bump, restore LPIPS/L2). The script locates 20k/30k checkpoints automatically.
+- Stage 2 will automatically search for the newest `iteration_35000.pt` under `experiments/full_training_run/**/checkpoints/` and resume from it.
+- Validation is deterministic, every 500 steps, with small batch cap for speed.
 
 Monitoring
 - Track identity: train/id_improve_real should rise toward ≥0.02 by ~30–35k; train/loss_id_real should trend ≤0.40 late S1 and ≤0.38 in S2.
 - Visual checks: preserve facial structure (eyes, mouth asymmetry, moles), avoid generic-face drift.
 - If identity plateaus late in S1: briefly raise nearest_neighbor_id_loss_lambda to 0.25 for final 3–5k of S1, then keep 0.05 in S2.
+
+Final results of this eighth training:
+
+Setup recap:
+- Coach: orig_nn; extrapolation disabled
+- Stage 1: 0→20k baseline; 20k→30k lpips_crop=0.9, l2=0.08, l2_crop=0.4; 30k→35k NN-ID λ=0.25, restore lpips/L2
+- Stage 2: 35k→45k; id_lambda=0.30; NN-ID λ=0.05; learning_rate=3e-5
+- Shared: adaptive_w_norm_lambda=20; w_norm_lambda=0.003; cycle_lambda=1.5; crop LPIPS/L2 enabled
+
+Key validation (test) checkpoints:
+- 10k (S1 P1): loss_id_real≈0.409, lpips_real≈0.328, l2_real≈0.103, w_norm_real≈51.25, total≈1.134
+- 21k (S1 P2 early): loss_id_real≈0.390, lpips_real≈0.316, l2_real≈0.095, w_norm_real≈45.02, total≈1.034
+- 45k (end S2): loss_id_real≈0.284, lpips_real≈0.305, l2_real≈0.059, w_norm_real≈45.56, total≈0.722
+
+Representative training snapshots (late S2 window):
+- 44.55k: loss_id_real≈0.104, lpips_real≈0.250, l2_real≈0.064, w_norm_real≈48.40, total≈0.507
+- 45.00k: loss_id_real≈0.080, lpips_real≈0.195, l2_real≈0.025, w_norm_real≈46.16, total≈0.401
+
+Trends and observations:
+- Identity: improved substantially during S1 (0.409→0.390); further improved by S2 end on test (≈0.284). Train identity tightened steadily late S2 (≈0.08–0.15), indicating strong personalization without overfit spikes.
+- Perceptual/pixel: mid-run tightening (P2) reduced LPIPS/L2; by 45k test LPIPS≈0.305 and L2≈0.059, matching or slightly better than prior bests.
+- Regularization: w_norm_real dropped from ~51 at 10k to mid‑40s by 21k and stayed ~45–46 at 45k, suggesting stable edits with less drift than earlier stages; occasional train spikes to ~51 were transient.
+- NN-ID stability: nearest_neighbor_id_loss active (≈0.21–0.37 range) with the 30k→35k bump; no instability observed.
+
+Qualitative notes:
+- Visuals in late S1 and S2 were crisp with preserved micro‑identity (eyes/mouth), consistent with lower crop LPIPS/L2; no recurrent artifacts observed near the NN‑ID bump.
+
+Actionable follow‑ups:
+- Consider extending S1 to 38–40k when compute allows; most identity gains happened in S1.
+- Keep S2 short (e.g., 40–43k target) or use a brief LR plateau at 3e‑5 then anneal.
+- If w‑norm >52 coincides with any artifacts in a future run, temporarily raise w_norm_lambda to 0.0035 for 1–2k steps, then revert.

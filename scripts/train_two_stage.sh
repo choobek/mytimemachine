@@ -6,7 +6,7 @@ BASE_DIR="/home/wczub/RND/AI_DEAGING/repos/mytimemachine"
 ENV_NAME="mytimemachine"
 EXP_DIR_REL="experiments/full_training_run"
 EXP_DIR="$BASE_DIR/$EXP_DIR_REL"
-PYTHON_BIN="/home/wczub/miniforge3/envs/mytimemachine/bin/python"
+PYTHON_BIN="python"
 COACH="orig_nn"
 
 # Shared hparams
@@ -87,8 +87,8 @@ ensure_conda() {
   set -u
 }
 
-run_stage1() {
-  log "Starting Stage 1 to ${MAX_STEPS_S1} steps"
+run_stage1_phase1() {
+  log "Stage 1 Phase 1: 0 → 20000 (baseline S1 settings)"
   PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
   COACH="$COACH" "$PYTHON_BIN" "$BASE_DIR/scripts/train.py" \
     --dataset_type ffhq_aging \
@@ -129,6 +129,102 @@ run_stage1() {
     --extrapolation_prob_start "$EXTRAPOLATION_PROB_START_S1" \
     --extrapolation_prob_end "$EXTRAPOLATION_PROB_END_S1" \
     --nearest_neighbor_id_loss_lambda "$NEAREST_NEIGHBOR_ID_LAMBDA_S1" \
+    --train_encoder \
+    --max_steps 20000
+}
+
+run_stage1_phase2() {
+  local resume_ckpt="$1"
+  log "Stage 1 Phase 2: 20000 → 30000 (tighten LPIPS crop, lower L2s) from $resume_ckpt"
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
+  COACH="$COACH" "$PYTHON_BIN" "$BASE_DIR/scripts/train.py" \
+    --dataset_type ffhq_aging \
+    --workers "$WORKERS" \
+    --batch_size "$BATCH_SIZE" \
+    --test_batch_size "$TEST_BATCH_SIZE" \
+    --test_workers "$TEST_WORKERS" \
+    --val_interval "$VAL_INTERVAL" \
+    --save_interval "$SAVE_INTERVAL" \
+    --start_from_encoded_w_plus \
+    --id_lambda "$ID_LAMBDA_S1" \
+    --lpips_lambda "$LPIPS_LAMBDA_S1" \
+    --lpips_lambda_aging "$LPIPS_LAMBDA_AGING_S1" \
+    --lpips_lambda_crop 0.9 \
+    --l2_lambda 0.08 \
+    --l2_lambda_aging "$L2_LAMBDA_AGING_S1" \
+    --l2_lambda_crop 0.4 \
+    --w_norm_lambda "$W_NORM_LAMBDA_S1" \
+    --aging_lambda "$AGING_LAMBDA_S1" \
+    --cycle_lambda "$CYCLE_LAMBDA_S1" \
+    --input_nc "$INPUT_NC" \
+    --target_age "$TARGET_AGE" \
+    --use_weighted_id_loss \
+    --checkpoint_path "$CHECKPOINT_PATH" \
+    --train_dataset "$TRAIN_DATASET" \
+    --exp_dir "$EXP_DIR_REL" \
+    --adaptive_w_norm_lambda "$ADAPTIVE_W_NORM_LAMBDA_S1" \
+    --scheduler_type "$SCHEDULER_TYPE" \
+    --warmup_steps "$WARMUP_STEPS" \
+    --min_lr "$MIN_LR" \
+    --grad_clip_norm "$GRAD_CLIP_NORM" \
+    --nan_guard \
+    --val_disable_aging \
+    --val_deterministic \
+    --val_max_batches 2 \
+    --val_start_step 2000 \
+    --extrapolation_start_step "$EXTRAPOLATION_START_STEP_S1" \
+    --extrapolation_prob_start "$EXTRAPOLATION_PROB_START_S1" \
+    --extrapolation_prob_end "$EXTRAPOLATION_PROB_END_S1" \
+    --nearest_neighbor_id_loss_lambda "$NEAREST_NEIGHBOR_ID_LAMBDA_S1" \
+    --resume_checkpoint "$resume_ckpt" \
+    --train_encoder \
+    --max_steps 30000
+}
+
+run_stage1_phase3() {
+  local resume_ckpt="$1"
+  log "Stage 1 Phase 3: 30000 → 35000 (NN-ID bump, restore LPIPS/L2) from $resume_ckpt"
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
+  COACH="$COACH" "$PYTHON_BIN" "$BASE_DIR/scripts/train.py" \
+    --dataset_type ffhq_aging \
+    --workers "$WORKERS" \
+    --batch_size "$BATCH_SIZE" \
+    --test_batch_size "$TEST_BATCH_SIZE" \
+    --test_workers "$TEST_WORKERS" \
+    --val_interval "$VAL_INTERVAL" \
+    --save_interval "$SAVE_INTERVAL" \
+    --start_from_encoded_w_plus \
+    --id_lambda "$ID_LAMBDA_S1" \
+    --lpips_lambda "$LPIPS_LAMBDA_S1" \
+    --lpips_lambda_aging "$LPIPS_LAMBDA_AGING_S1" \
+    --lpips_lambda_crop "$LPIPS_LAMBDA_CROP_S1" \
+    --l2_lambda "$L2_LAMBDA_S1" \
+    --l2_lambda_aging "$L2_LAMBDA_AGING_S1" \
+    --l2_lambda_crop "$L2_LAMBDA_CROP_S1" \
+    --w_norm_lambda "$W_NORM_LAMBDA_S1" \
+    --aging_lambda "$AGING_LAMBDA_S1" \
+    --cycle_lambda "$CYCLE_LAMBDA_S1" \
+    --input_nc "$INPUT_NC" \
+    --target_age "$TARGET_AGE" \
+    --use_weighted_id_loss \
+    --checkpoint_path "$CHECKPOINT_PATH" \
+    --train_dataset "$TRAIN_DATASET" \
+    --exp_dir "$EXP_DIR_REL" \
+    --adaptive_w_norm_lambda "$ADAPTIVE_W_NORM_LAMBDA_S1" \
+    --scheduler_type "$SCHEDULER_TYPE" \
+    --warmup_steps "$WARMUP_STEPS" \
+    --min_lr "$MIN_LR" \
+    --grad_clip_norm "$GRAD_CLIP_NORM" \
+    --nan_guard \
+    --val_disable_aging \
+    --val_deterministic \
+    --val_max_batches 2 \
+    --val_start_step 2000 \
+    --extrapolation_start_step "$EXTRAPOLATION_START_STEP_S1" \
+    --extrapolation_prob_start "$EXTRAPOLATION_PROB_START_S1" \
+    --extrapolation_prob_end "$EXTRAPOLATION_PROB_END_S1" \
+    --nearest_neighbor_id_loss_lambda 0.25 \
+    --resume_checkpoint "$resume_ckpt" \
     --train_encoder \
     --max_steps "$MAX_STEPS_S1"
 }
@@ -192,8 +288,26 @@ run_stage2() {
 
 main() {
   cd "$BASE_DIR"
-  # Using explicit python binary from the conda env; no shell activation required
-  run_stage1
+  ensure_conda
+  run_stage1_phase1
+
+  # Find 20k checkpoint
+  ckpt20=$(find_latest_ckpt_for_steps 20000 || true)
+  if [[ -z "${ckpt20:-}" || ! -f "$ckpt20" ]]; then
+    log "ERROR: Could not locate 20000 checkpoint under $EXP_DIR"
+    exit 1
+  fi
+
+  run_stage1_phase2 "$ckpt20"
+
+  # Find 30k checkpoint
+  ckpt30=$(find_latest_ckpt_for_steps 30000 || true)
+  if [[ -z "${ckpt30:-}" || ! -f "$ckpt30" ]]; then
+    log "ERROR: Could not locate 30000 checkpoint under $EXP_DIR"
+    exit 1
+  fi
+
+  run_stage1_phase3 "$ckpt30"
 
   # Find newest Stage 1 checkpoint for the configured MAX_STEPS_S1
   resume_ckpt=$(find_latest_ckpt_for_steps "$MAX_STEPS_S1" || true)
