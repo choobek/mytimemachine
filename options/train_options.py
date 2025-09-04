@@ -140,6 +140,15 @@ class TrainOptions:
                                  help='How many neighboring 5y bins to include on each side (0 = same bin only).')
         self.parser.add_argument('--mb_temperature', type=float, default=0.07,
                                  help='Temperature for cosine similarities.')
+        # FAISS miner toggles
+        self.parser.add_argument('--mb_use_faiss', action='store_true',
+                                 help='Use FAISS miner for negatives.')
+        self.parser.add_argument('--mb_top_m', type=int, default=512,
+                                 help='Top-M candidates per query before filtering.')
+        self.parser.add_argument('--mb_min_sim', type=float, default=0.20,
+                                 help='Lower cosine bound for semi-hard negatives.')
+        self.parser.add_argument('--mb_max_sim', type=float, default=0.70,
+                                 help='Upper cosine bound for negatives.')
         # curriculum for extrapolation
         self.parser.add_argument('--extrapolation_start_step', default=3000, type=int,
                                  help='Training step to allow any extrapolation')
