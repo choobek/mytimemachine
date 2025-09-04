@@ -459,18 +459,17 @@ Actionable follow‑ups:
 - Keep S2 short (e.g., 40–43k target) or use a brief LR plateau at 3e‑5 then anneal.
 - If w‑norm >52 coincides with any artifacts in a future run, temporarily raise w_norm_lambda to 0.0035 for 1–2k steps, then revert.
 
+
 Ninth training (2-staged) — identity focus with age-aware contrastive loss
 -------------------------------------
 Rationale:
-- Most identity gains occur in Stage 1 (encoder+decoder). Keep Stage 1 extended; use a lighter Stage 2 for refinement.
-- Use the new impostor-only, age-aware contrastive loss lightly, with higher temperature and moderate negatives to avoid over-canonical pose/lighting.
-- Keep NN-ID alongside contrastive; both target identity from different angles (pull vs. repel).
+- Add an impostor-only, age-aware contrastive ID loss that repels away from different-identity embeddings drawn from an FFHQ bank, but only within an age window. Use a higher temperature and moderate K to avoid over-canonical pose/lighting. Keep NN-ID alongside contrastive (pull vs. repel) and maintain the stable regularization mix from prior runs.
 
 Key settings:
 - Coach: orig_nn
-- Contrastive: λ S1=0.04, S2=0.02; mb_k=32; τ=0.12; age window=[35,45]; neighbor_radius=0
+- Contrastive: λ S1=0.04, S2=0.02; K=32; τ=0.12; age window=[35,45]; neighbor_radius=0
 - NN-ID: λ S1=0.10, S2=0.05
-- In-domain only (disable extrapolation in S1); keep stable regs and LR schedule
+- In-domain only (extrapolation disabled); cosine scheduler with warmup; nan-guard and grad clipping on
 
 Stage 1 — 30k steps (encoder+decoder)
 ```bash
@@ -481,13 +480,13 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate my
   --start_from_encoded_w_plus --train_encoder \
   --batch_size 2 --workers 2 \
   --target_age uniform_random \
-  --max_steps 30000 --image_interval 1000 \
-  --board_interval 50 --val_interval 500 --val_deterministic --val_max_batches 2 \
+  --max_steps 30000 --image_interval 100 \
+  --board_interval 50 --val_interval 500 --val_deterministic --val_max_batches 2 --val_start_step 2000 --val_disable_aging \
   --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
   --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
   --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 1.5 \
   --adaptive_w_norm_lambda 20 \
-  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 \
+  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard \
   --extrapolation_start_step 1000000000 \
   --nearest_neighbor_id_loss_lambda 0.1 \
   --contrastive_id_lambda 0.04 \
@@ -507,7 +506,7 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate my
   --start_from_encoded_w_plus --train_decoder \
   --batch_size 2 --workers 2 \
   --target_age uniform_random \
-  --max_steps 60000 --image_interval 1000 \
+  --max_steps 60000 --image_interval 100 \
   --board_interval 50 --val_interval 500 --val_deterministic --val_max_batches 2 \
   --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
   --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
@@ -515,7 +514,7 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate my
   --aging_lambda 5 --aging_lambda_decoder_scale 0.5 \
   --cycle_lambda 1.5 \
   --adaptive_w_norm_lambda 20 \
-  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 \
+  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard \
   --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_30000.pt \
   --nearest_neighbor_id_loss_lambda 0.05 \
   --contrastive_id_lambda 0.02 \
@@ -527,10 +526,24 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate my
 ```
 
 Monitoring:
-- Identity: train/id_improve_real → ≥0 late S1; loss_id_real ≤0.40 late S1, ≤0.38 in S2
-- Contrastive: loss_contrastive_id non-zero and decaying; mb_applied_ratio ~0.2–0.4 with uniform ages
-- Pose/lighting: should remain less “locked” vs heavy λ runs
+- Identity: train/id_improve_real should trend toward ≥0 late S1; loss_id_real ≤0.40 late S1 and ≤0.38 in S2
+- Contrastive: train/loss_contrastive_id non-zero when ages in [35,45]; train/mb_applied_ratio ~0.5–1.0 depending on batch ages; should decay gradually
+- Regularization: loss_w_norm_real should settle in low‑40s without spikes; nan-guard should prevent non-finite steps
 
-If pose/lighting too fixed:
-- S1: contrastive_id_lambda → 0.03; τ → 0.15; mb_k → 16
-- S2: contrastive_id_lambda → 0.015
+Results (mid-run; current 00058):
+- Configuration (from opt.json): contrastive_id_lambda=0.04, mb_k=32, τ=0.12, age window=[35,45]; nearest_neighbor_id_loss_lambda=0.10; image_interval=100; validation deterministic every 500 steps (val_max_batches=2; val_disable_aging)
+- Train snapshots (12k→21k):
+  - loss_id_real ≈ 0.28–0.33 early-mid; best train loss milestones improved to ≈0.95 at 16.5k (per checkpoints/timestamp.txt “Best” markers)
+  - loss_lpips_real ≈ 0.29–0.31; loss_l2_real ≈ 0.03–0.06
+  - loss_w_norm_real decayed from ~48–52 into low‑40s by ~19–21k; stable
+  - Contrastive active values: loss_contrastive_id ≈ 3.6–4.3 when applied; 0.0 when mask off; mb_applied_ratio commonly 0.5–1.0, occasionally 0.0 when ages fall outside [35,45]
+  - NN‑ID active: nearest_neighbor_id_loss typically ≈0.19–0.40; no instability observed
+- Validation/test snapshots:
+  - 19k (test): loss≈0.938; loss_id_real≈0.301; lpips_real≈0.290; l2_real≈0.046; w_norm_real≈42.86; loss_contrastive_id≈3.73; mb_applied_ratio≈0.75
+  - 20.5k (test): loss≈0.956; loss_id_real≈0.300; lpips_real≈0.290; l2_real≈0.0458; w_norm_real≈43.01; loss_contrastive_id≈3.78; mb_applied_ratio≈0.75
+  - 21k (test): loss≈0.950; loss_id_real≈0.305; lpips_real≈0.290; l2_real≈0.0463; w_norm_real≈42.50; loss_contrastive_id≈3.72; mb_applied_ratio≈0.75
+
+Observations:
+- The contrastive loss is functioning as intended: it is applied only when target ages hit [35,45], with mb_applied_ratio reflecting batch composition. Values are finite and stable, coexisting with NN‑ID.
+- Identity and perceptual/pixel losses are in the same ranges as strong prior Stage‑1 runs by ~19–21k, and weight‑norm is trending into the expected low‑40s band without divergence.
+- If pose/lighting appear too “locked,” consider λ→0.03 and/or τ→0.15, optionally reduce K→16. Otherwise continue through 30k and proceed to a light Stage 2.
