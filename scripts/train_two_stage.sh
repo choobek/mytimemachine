@@ -25,8 +25,8 @@ GRAD_CLIP_NORM=1.0
 WARMUP_STEPS=500
 MIN_LR=5e-7
 
-# Stage 1 hparams (Seventh training plan)
-ID_LAMBDA_S1=0.35
+# Stage 1 hparams (Ninth training plan)
+ID_LAMBDA_S1=0.3
 LPIPS_LAMBDA_S1=0.1
 LPIPS_LAMBDA_AGING_S1=0.1
 LPIPS_LAMBDA_CROP_S1=0.8
@@ -35,18 +35,27 @@ L2_LAMBDA_AGING_S1=0.25
 L2_LAMBDA_CROP_S1=0.5
 W_NORM_LAMBDA_S1=0.003
 AGING_LAMBDA_S1=5
-# Slightly relax cycle to avoid overemphasis per run 5 plan
 CYCLE_LAMBDA_S1=1.5
 ADAPTIVE_W_NORM_LAMBDA_S1=20
 # Disable extrapolation (interpolation-only) and add NN-ID reg
 EXTRAPOLATION_START_STEP_S1=1000000000
 EXTRAPOLATION_PROB_START_S1=0.0
 EXTRAPOLATION_PROB_END_S1=0.5
-NEAREST_NEIGHBOR_ID_LAMBDA_S1=0.2
-# Extend Stage 1 duration for identity convergence
-MAX_STEPS_S1=35000
+NEAREST_NEIGHBOR_ID_LAMBDA_S1=0.1
+# Stage 1 duration
+MAX_STEPS_S1=30000
 
-# Stage 2 hparams (Seventh training plan)
+# Contrastive impostor loss (Ninth plan)
+CONTRASTIVE_ID_LAMBDA_S1=0.04
+CONTRASTIVE_ID_LAMBDA_S2=0.02
+MB_INDEX_PATH="banks/ffhq_ir50_age_5y.pt"
+MB_K=32
+MB_APPLY_MIN_AGE=35
+MB_APPLY_MAX_AGE=45
+MB_BIN_NEIGHBOR_RADIUS=0
+MB_TEMPERATURE=0.12
+
+# Stage 2 hparams (Ninth training plan)
 ID_LAMBDA_S2=0.3
 LPIPS_LAMBDA_S2=$LPIPS_LAMBDA_S1
 LPIPS_LAMBDA_AGING_S2=$LPIPS_LAMBDA_AGING_S1
@@ -60,9 +69,9 @@ AGING_LAMBDA_S2=$AGING_LAMBDA_S1
 AGING_LAMBDA_DECODER_SCALE_S2=0.5
 CYCLE_LAMBDA_S2=$CYCLE_LAMBDA_S1
 ADAPTIVE_W_NORM_LAMBDA_S2=$ADAPTIVE_W_NORM_LAMBDA_S1
-# Reduce Stage 2 LR for stability and shorten total steps
+# Stage 2 LR and duration
 LEARNING_RATE_S2=3e-5
-MAX_STEPS_S2=45000
+MAX_STEPS_S2=60000
 NEAREST_NEIGHBOR_ID_LAMBDA_S2=0.05
 
 log() { printf "[two-stage][%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -88,7 +97,7 @@ ensure_conda() {
 }
 
 run_stage1_phase1() {
-  log "Stage 1 Phase 1: 0 → 20000 (baseline S1 settings)"
+  log "Stage 1: 0 → ${MAX_STEPS_S1} (Ninth plan)"
   PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
   COACH="$COACH" "$PYTHON_BIN" "$BASE_DIR/scripts/train.py" \
     --dataset_type ffhq_aging \
@@ -129,8 +138,15 @@ run_stage1_phase1() {
     --extrapolation_prob_start "$EXTRAPOLATION_PROB_START_S1" \
     --extrapolation_prob_end "$EXTRAPOLATION_PROB_END_S1" \
     --nearest_neighbor_id_loss_lambda "$NEAREST_NEIGHBOR_ID_LAMBDA_S1" \
+    --contrastive_id_lambda "$CONTRASTIVE_ID_LAMBDA_S1" \
+    --mb_index_path "$MB_INDEX_PATH" \
+    --mb_k "$MB_K" \
+    --mb_apply_min_age "$MB_APPLY_MIN_AGE" \
+    --mb_apply_max_age "$MB_APPLY_MAX_AGE" \
+    --mb_bin_neighbor_radius "$MB_BIN_NEIGHBOR_RADIUS" \
+    --mb_temperature "$MB_TEMPERATURE" \
     --train_encoder \
-    --max_steps 20000
+    --max_steps "$MAX_STEPS_S1"
 }
 
 run_stage1_phase2() {
@@ -280,6 +296,13 @@ run_stage2() {
     --extrapolation_prob_start "$EXTRAPOLATION_PROB_START_S1" \
     --extrapolation_prob_end "$EXTRAPOLATION_PROB_END_S1" \
     --nearest_neighbor_id_loss_lambda "$NEAREST_NEIGHBOR_ID_LAMBDA_S2" \
+    --contrastive_id_lambda "$CONTRASTIVE_ID_LAMBDA_S2" \
+    --mb_index_path "$MB_INDEX_PATH" \
+    --mb_k "$MB_K" \
+    --mb_apply_min_age "$MB_APPLY_MIN_AGE" \
+    --mb_apply_max_age "$MB_APPLY_MAX_AGE" \
+    --mb_bin_neighbor_radius "$MB_BIN_NEIGHBOR_RADIUS" \
+    --mb_temperature "$MB_TEMPERATURE" \
     --resume_checkpoint "$resume_ckpt" \
     --train_decoder \
     --max_steps "$MAX_STEPS_S2" \
@@ -290,24 +313,6 @@ main() {
   cd "$BASE_DIR"
   ensure_conda
   run_stage1_phase1
-
-  # Find 20k checkpoint
-  ckpt20=$(find_latest_ckpt_for_steps 20000 || true)
-  if [[ -z "${ckpt20:-}" || ! -f "$ckpt20" ]]; then
-    log "ERROR: Could not locate 20000 checkpoint under $EXP_DIR"
-    exit 1
-  fi
-
-  run_stage1_phase2 "$ckpt20"
-
-  # Find 30k checkpoint
-  ckpt30=$(find_latest_ckpt_for_steps 30000 || true)
-  if [[ -z "${ckpt30:-}" || ! -f "$ckpt30" ]]; then
-    log "ERROR: Could not locate 30000 checkpoint under $EXP_DIR"
-    exit 1
-  fi
-
-  run_stage1_phase3 "$ckpt30"
 
   # Find newest Stage 1 checkpoint for the configured MAX_STEPS_S1
   resume_ckpt=$(find_latest_ckpt_for_steps "$MAX_STEPS_S1" || true)

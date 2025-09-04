@@ -34,18 +34,18 @@ def vis_faces(log_hooks):
 def vis_faces_with_age(hooks_dict, fig, gs, i):
 	fig.add_subplot(gs[i, 0])
 	plt.imshow(hooks_dict['input_face'])
-	plt.title('Input\nOut Sim={:.2f}\nInput Age={:.2f}'.format(float(hooks_dict['diff_input_real']),
-	                                                           float(hooks_dict['input_age_real'])))
+	plt.title('Input\nOut Sim={:.2f}\nInput Age={:.2f}'.format(float(hooks_dict.get('diff_input_real', 0.0)),
+	                                                           float(hooks_dict.get('input_age_real', 0.0))))
 	fig.add_subplot(gs[i, 1])
 	plt.imshow(hooks_dict['target_face'])
-	plt.title('Target\nIn={:.2f},Out={:.2f}\nTarget Age={:.2f}'.format(float(hooks_dict['diff_views_real']),
-	                                                                   float(hooks_dict['diff_target_real']),
-	                                                                   float(hooks_dict['target_age_real'])))
+	plt.title('Target\nIn={:.2f},Out={:.2f}\nTarget Age={:.2f}'.format(float(hooks_dict.get('diff_views_real', 0.0)),
+	                                                                   float(hooks_dict.get('diff_target_real', 0.0)),
+	                                                                   float(hooks_dict.get('target_age_real', 0.0))))
 	fig.add_subplot(gs[i, 2])
 	plt.imshow(hooks_dict['output_face'])
-	plt.title('Output\nTarget Sim={:.2f}\nOuput Age={:.2f}'.format(float(hooks_dict['diff_target_real']),
-	                                                               float(hooks_dict['output_age_real'])))
+	plt.title('Output\nTarget Sim={:.2f}\nOuput Age={:.2f}'.format(float(hooks_dict.get('diff_target_real', 0.0)),
+	                                                               float(hooks_dict.get('output_age_real', 0.0))))
 	fig.add_subplot(gs[i, 3])
 	plt.imshow(hooks_dict['recovered_face'])
-	plt.title('Recovered\nTarget Sim={:.2f}\nOuput Age={:.2f}'.format(float(hooks_dict['diff_target_cycle']),
-																	  float(hooks_dict['output_age_cycle'])))
+	plt.title('Recovered\nTarget Sim={:.2f}\nOuput Age={:.2f}'.format(float(hooks_dict.get('diff_target_cycle', 0.0)),
+																		  float(hooks_dict.get('output_age_cycle', 0.0))))

@@ -25,8 +25,9 @@ COACH_MODULE_MAP = {
 	'delta': 'training.coach_aging_delta',
 }
 
-def get_coach_class():
-	name = os.environ.get('COACH', 'orig')
+def get_coach_class(name=None):
+	if name is None or len(str(name).strip()) == 0:
+		name = os.environ.get('COACH', 'orig')
 	module_name = COACH_MODULE_MAP.get(name, COACH_MODULE_MAP['orig'])
 	module = importlib.import_module(module_name)
 	return getattr(module, 'Coach')
@@ -52,7 +53,8 @@ def main():
 	with open(os.path.join(opts.exp_dir, 'opt.json'), 'w') as f:
 		json.dump(opts_dict, f, indent=4, sort_keys=True)
 
-	CoachClass = get_coach_class()
+	coach_name = getattr(opts, 'coach', None)
+	CoachClass = get_coach_class(coach_name)
 	coach = CoachClass(opts)
 	coach.train()
 

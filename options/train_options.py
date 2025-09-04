@@ -17,6 +17,8 @@ class TrainOptions:
                                  help='Path to experiment output directory')
         self.parser.add_argument('--dataset_type', default='ffhq_aging', type=str,
                                  help='Type of dataset/experiment to run')
+        self.parser.add_argument('--coach', default=None, type=str,
+                                 help='Coach to use: orig|orig_nn|tune_no_psp|tune_psp|delta')
         self.parser.add_argument('--input_nc', default=4, type=int,
                                  help='Number of input image channels to the psp encoder')
         self.parser.add_argument('--label_nc', default=0, type=int,
@@ -123,6 +125,21 @@ class TrainOptions:
                                  help="Weight for adaptive w-norm loss")
         self.parser.add_argument('--nearest_neighbor_id_loss_lambda', default=1, type=float,
                                  help="Weight for nearest neighbor id loss")
+        # Contrastive impostor (age-aware) toggles
+        self.parser.add_argument('--contrastive_id_lambda', type=float, default=0.0,
+                                 help='Weight for impostor-only age-aware contrastive ID loss; 0 disables.')
+        self.parser.add_argument('--mb_index_path', type=str, default="",
+                                 help='Path to bank .pt (e.g., banks/ffhq_ir50_age_5y.pt). Empty disables.')
+        self.parser.add_argument('--mb_k', type=int, default=64,
+                                 help='Negatives per sample.')
+        self.parser.add_argument('--mb_apply_min_age', type=int, default=None,
+                                 help='Min target age to apply the contrastive loss (inclusive). None = no lower bound.')
+        self.parser.add_argument('--mb_apply_max_age', type=int, default=None,
+                                 help='Max target age to apply the contrastive loss (inclusive). None = no upper bound.')
+        self.parser.add_argument('--mb_bin_neighbor_radius', type=int, default=0,
+                                 help='How many neighboring 5y bins to include on each side (0 = same bin only).')
+        self.parser.add_argument('--mb_temperature', type=float, default=0.07,
+                                 help='Temperature for cosine similarities.')
         # curriculum for extrapolation
         self.parser.add_argument('--extrapolation_start_step', default=3000, type=int,
                                  help='Training step to allow any extrapolation')
