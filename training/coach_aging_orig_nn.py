@@ -92,10 +92,26 @@ class Coach:
 		# Contrastive impostor bank and options
 		self.contrastive_id_lambda = float(getattr(self.opts, 'contrastive_id_lambda', 0.0) or 0.0)
 		self.mb = None
+		self.miner = None
 		mb_index_path = getattr(self.opts, 'mb_index_path', '') or ''
+		self.mb_use_faiss = bool(getattr(self.opts, 'mb_use_faiss', False))
+		self.mb_top_m = int(getattr(self.opts, 'mb_top_m', 512) or 512)
+		self.mb_min_sim = float(getattr(self.opts, 'mb_min_sim', 0.20) or 0.20)
+		self.mb_max_sim = float(getattr(self.opts, 'mb_max_sim', 0.70) or 0.70)
 		if self.contrastive_id_lambda > 0 and len(mb_index_path) > 0:
-			from training.impostor_bank import AgeMatchedImpostorBank
-			self.mb = AgeMatchedImpostorBank(mb_index_path)
+			if self.mb_use_faiss:
+				try:
+					from training.impostor_faiss import AgeMatchedImpostorMiner
+					self.miner = AgeMatchedImpostorMiner(mb_index_path, use_faiss=True)
+					self.logger.add_text("setup/mb_backend", "faiss", self.global_step)
+				except Exception:
+					from training.impostor_bank import AgeMatchedImpostorBank
+					self.mb = AgeMatchedImpostorBank(mb_index_path)
+					self.logger.add_text("setup/mb_backend", "random", self.global_step)
+			else:
+				from training.impostor_bank import AgeMatchedImpostorBank
+				self.mb = AgeMatchedImpostorBank(mb_index_path)
+				self.logger.add_text("setup/mb_backend", "random", self.global_step)
 		self.mb_k = int(getattr(self.opts, 'mb_k', 64) or 64)
 		self.mb_bin_neighbor_radius = int(getattr(self.opts, 'mb_bin_neighbor_radius', 0) or 0)
 		# apply bounds are in years; None disables bound
@@ -524,7 +540,7 @@ class Coach:
 		if (data_type == "real"):
 			apply_mask = None
 			try:
-				if self.mb is not None and self.contrastive_id_lambda > 0:
+				if (self.mb is not None or self.miner is not None) and self.contrastive_id_lambda > 0:
 					# Convert target ages from [0,1] to integer years [0,100]
 					target_age_years = torch.clamp((target_ages * 100.0).round().to(torch.int64), 0, 200)
 					apply_mask = torch.ones(y_hat.size(0), dtype=torch.bool, device=y_hat.device)
@@ -536,11 +552,26 @@ class Coach:
 					if apply_mask.any():
 						# Sample negatives for active subset on CPU (avoid cross-device mask indexing)
 						ages_cpu = target_age_years[apply_mask].detach().to("cpu")
-						negs = self.mb.sample(ages_cpu, k=self.mb_k, radius=self.mb_bin_neighbor_radius)
-						negs = negs.to(y_hat.device, non_blocking=True)
 						# Compute query embeddings with gradients flowing to generator
 						q = self.id_loss.extract_feats(y_hat[apply_mask])  # [b',512]
 						q = F.normalize(q, dim=1)
+						if (self.miner is not None) and self.mb_use_faiss:
+							negs, sims_sel = self.miner.query(
+								q.detach(), ages_cpu, k=self.mb_k,
+								min_sim=self.mb_min_sim, max_sim=self.mb_max_sim,
+								top_m=self.mb_top_m, radius=self.mb_bin_neighbor_radius,
+								device=y_hat.device
+							)
+							self.logger.add_scalar("train/mb_neg_sim_mean", float(sims_sel.mean().item()), self.global_step)
+							# kthvalue expects k>=1; approximate p90 via sorted index
+							flat = sims_sel.flatten()
+							kth = max(1, int(0.9 * flat.numel()))
+							values, _ = torch.topk(flat, kth)
+							p90 = float(values.min().item()) if values.numel() > 0 else 0.0
+							self.logger.add_scalar("train/mb_neg_sim_p90", p90, self.global_step)
+						else:
+							negs = self.mb.sample(ages_cpu, k=self.mb_k, radius=self.mb_bin_neighbor_radius)
+						negs = negs.to(y_hat.device, non_blocking=True)
 						negs = F.normalize(negs, dim=2)
 						# Cosine similarities and log-sum-exp repel
 						sims = torch.einsum("bd,bkd->bk", q, negs) / float(self.mb_temperature)
@@ -597,6 +628,9 @@ class Coach:
 		loss_dict[f'loss_{data_type}'] = float(loss)
 		if data_type == "cycle":
 			loss = loss * self.opts.cycle_lambda
+		# Ensure tensor scalar return for backward safety even if no losses active
+		if not torch.is_tensor(loss):
+			loss = torch.zeros((), device=y_hat.device, requires_grad=True)
 		return loss, loss_dict, id_logs
 
 	def log_metrics(self, metrics_dict, prefix):
