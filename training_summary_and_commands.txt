@@ -362,6 +362,12 @@ How to run (updated two-stage script):
 ```bash
 bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && ./scripts/train_two_stage.sh | cat"
 ```
+
+Monitoring
+- Track identity: train/id_improve_real should rise toward ≥0.02 by ~30–35k; train/loss_id_real should trend ≤0.40 late S1 and ≤0.38 in S2.
+- Visual checks: preserve facial structure (eyes, mouth asymmetry, moles), avoid generic-face drift.
+- If identity plateaus late in S1: briefly raise nearest_neighbor_id_loss_lambda to 0.25 for final 3–5k of S1, then keep 0.05 in S2.
+
 Final results of this seventh training:
 
 Setup recap:
@@ -390,7 +396,6 @@ Recommendations:
 - Allocate more budget to Stage 1 (e.g., 38–40k) and shorten Stage 2 (e.g., 40–43k). Most identity gains manifest during Stage 1.
 - If identity plateaus late Stage 1, briefly bump NN-ID λ to 0.25 for the last 3–5k, then revert to 0.05 for Stage 2.
 - Keep current regularization and interpolation-only setting; both correlate with stable, artifact-free training here.
-
 Eighth training (2-staged, start from scratch on second computer) — Seventh + medium improvements
 -------------------------------------
 Goal: Start Stage 1 from step 0 with COACH=orig_nn and NN-ID regularizer, extrapolation disabled. Apply phased tweaks in Stage 1 (mid-run LPIPS/L2 tightening; late NN-ID bump). Automatically continue to Stage 2 when Stage 1 reaches 35k.
