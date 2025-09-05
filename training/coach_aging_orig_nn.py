@@ -119,6 +119,24 @@ class Coach:
 		self.mb_apply_max_age = getattr(self.opts, 'mb_apply_max_age', None)
 		self.mb_temperature = float(getattr(self.opts, 'mb_temperature', 0.07) or 0.07)
 
+		# ROI-ID micro-loss configuration
+		self.roi_id_lambda = float(getattr(self.opts, 'roi_id_lambda', 0.0) or 0.0)
+		self.roi_size = int(getattr(self.opts, 'roi_size', 112) or 112)
+		self.roi_pad = float(getattr(self.opts, 'roi_pad', 0.35) or 0.35)
+		self.roi_jitter = float(getattr(self.opts, 'roi_jitter', 0.08) or 0.08)
+		self.roi_use_eyes = bool(getattr(self.opts, 'roi_use_eyes', False))
+		self.roi_use_mouth = bool(getattr(self.opts, 'roi_use_mouth', False))
+		self.roi_cropper = None
+		if self.roi_id_lambda > 0 and (self.roi_use_eyes or self.roi_use_mouth):
+			try:
+				from training.roi_crops import LandmarkCropper
+				self.roi_cropper = LandmarkCropper(getattr(self.opts, 'roi_landmarks_model', ''))
+			except Exception:
+				self.roi_cropper = None
+			# Ensure ID encoder is available for ROI-ID even if other ID losses are off
+			if not hasattr(self, 'id_loss'):
+				self.id_loss = id_loss.IDLoss().to(self.device).eval()
+
 		# Build optional scheduler for stability
 		self.scheduler = self._build_scheduler(self.optimizer)
 
@@ -619,6 +637,42 @@ class Coach:
 				self.logger.add_scalar("train/mb_applied_ratio", 0.0, self.global_step)
 				loss_dict['loss_contrastive_id'] = 0.0
 				loss_dict['mb_applied_ratio'] = 0.0
+			# ROI-ID micro-loss on real pass only
+			if self.roi_id_lambda > 0 and (self.roi_cropper is not None) and (self.roi_use_eyes or self.roi_use_mouth):
+				try:
+					roi_losses = []
+					roi_count = 0
+					x_src = x
+					x_gen = y_hat
+					for b in range(int(x_gen.size(0))):
+						src = x_src[b]
+						gen = x_gen[b]
+						crops_src = self.roi_cropper.rois(src, self.roi_pad, self.roi_jitter, self.roi_size, train=True,
+														use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth)
+						crops_gen = self.roi_cropper.rois(gen, self.roi_pad, self.roi_jitter, self.roi_size, train=True,
+														use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth)
+						for key in list(crops_src.keys()):
+							if key in crops_gen:
+								# Use IR-SE50 features; keep grad path to y_hat
+								e_src = self.id_loss.extract_feats(crops_src[key].unsqueeze(0).to(self.device))
+								e_gen = self.id_loss.extract_feats(crops_gen[key].unsqueeze(0).to(self.device))
+								e_src = F.normalize(e_src, dim=1)
+								e_gen = F.normalize(e_gen, dim=1)
+								cos = torch.sum(e_src * e_gen, dim=1)  # [1]
+								loss_roi = (1.0 - cos).mean()
+								roi_losses.append(loss_roi)
+								roi_count += 1
+					if len(roi_losses) > 0:
+						L_roi = torch.stack(roi_losses).mean()
+						loss = loss + self.roi_id_lambda * L_roi
+						self.logger.add_scalar("train/loss_roi_id", float(L_roi.item()), self.global_step)
+						self.logger.add_scalar("train/roi_pairs", int(roi_count), self.global_step)
+					else:
+						self.logger.add_scalar("train/loss_roi_id", 0.0, self.global_step)
+						self.logger.add_scalar("train/roi_pairs", 0, self.global_step)
+				except Exception:
+					self.logger.add_scalar("train/loss_roi_id", 0.0, self.global_step)
+					self.logger.add_scalar("train/roi_pairs", 0, self.global_step)
 		# Nearest-neighbor identity regularizer during interpolation only
 		nn_lambda = float(getattr(self.opts, 'nearest_neighbor_id_loss_lambda', 0.0) or 0.0)
 		if (nn_lambda > 0) and (not no_aging) and self._is_interpolation(target_ages) and (self.feats_dict is not None):

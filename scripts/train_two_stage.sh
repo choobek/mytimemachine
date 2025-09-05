@@ -25,7 +25,7 @@ GRAD_CLIP_NORM=1.0
 WARMUP_STEPS=500
 MIN_LR=5e-7
 
-# Stage 1 hparams (Ninth training plan)
+# Stage 1 hparams (Tenth training plan)
 ID_LAMBDA_S1=0.3
 LPIPS_LAMBDA_S1=0.1
 LPIPS_LAMBDA_AGING_S1=0.1
@@ -42,18 +42,31 @@ EXTRAPOLATION_START_STEP_S1=1000000000
 EXTRAPOLATION_PROB_START_S1=0.0
 EXTRAPOLATION_PROB_END_S1=0.5
 NEAREST_NEIGHBOR_ID_LAMBDA_S1=0.1
-# Stage 1 duration
-MAX_STEPS_S1=30000
+# Stage 1 duration (extended)
+MAX_STEPS_S1=40000
 
-# Contrastive impostor loss (Ninth plan)
+# Contrastive impostor loss (FAISS miner)
 CONTRASTIVE_ID_LAMBDA_S1=0.04
 CONTRASTIVE_ID_LAMBDA_S2=0.02
 MB_INDEX_PATH="banks/ffhq_ir50_age_5y.pt"
-MB_K=32
+MB_K=64
 MB_APPLY_MIN_AGE=35
 MB_APPLY_MAX_AGE=45
 MB_BIN_NEIGHBOR_RADIUS=0
 MB_TEMPERATURE=0.12
+MB_USE_FAISS=1
+MB_TOP_M=512
+MB_MIN_SIM=0.20
+MB_MAX_SIM=0.70
+
+# ROI-ID micro loss (eyes + mouth)
+ROI_ID_LAMBDA=0.05
+ROI_USE_EYES=1
+ROI_USE_MOUTH=1
+ROI_SIZE=112
+ROI_PAD=0.35
+ROI_JITTER=0.06
+ROI_LANDMARKS_MODEL="pretrained_models/shape_predictor_68_face_landmarks.dat"
 
 # Stage 2 hparams (Ninth training plan)
 ID_LAMBDA_S2=0.3
@@ -69,9 +82,9 @@ AGING_LAMBDA_S2=$AGING_LAMBDA_S1
 AGING_LAMBDA_DECODER_SCALE_S2=0.5
 CYCLE_LAMBDA_S2=$CYCLE_LAMBDA_S1
 ADAPTIVE_W_NORM_LAMBDA_S2=$ADAPTIVE_W_NORM_LAMBDA_S1
-# Stage 2 LR and duration
+# Stage 2 LR and duration (shortened total)
 LEARNING_RATE_S2=3e-5
-MAX_STEPS_S2=60000
+MAX_STEPS_S2=55000
 NEAREST_NEIGHBOR_ID_LAMBDA_S2=0.05
 
 log() { printf "[two-stage][%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -97,7 +110,7 @@ ensure_conda() {
 }
 
 run_stage1_phase1() {
-  log "Stage 1: 0 → ${MAX_STEPS_S1} (Ninth plan)"
+  log "Stage 1: 0 → ${MAX_STEPS_S1} (Tenth plan: FAISS + ROI-ID)"
   PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
   COACH="$COACH" "$PYTHON_BIN" "$BASE_DIR/scripts/train.py" \
     --dataset_type ffhq_aging \
@@ -141,10 +154,21 @@ run_stage1_phase1() {
     --contrastive_id_lambda "$CONTRASTIVE_ID_LAMBDA_S1" \
     --mb_index_path "$MB_INDEX_PATH" \
     --mb_k "$MB_K" \
+    --mb_use_faiss \
+    --mb_top_m "$MB_TOP_M" \
+    --mb_min_sim "$MB_MIN_SIM" \
+    --mb_max_sim "$MB_MAX_SIM" \
     --mb_apply_min_age "$MB_APPLY_MIN_AGE" \
     --mb_apply_max_age "$MB_APPLY_MAX_AGE" \
     --mb_bin_neighbor_radius "$MB_BIN_NEIGHBOR_RADIUS" \
     --mb_temperature "$MB_TEMPERATURE" \
+    --roi_id_lambda "$ROI_ID_LAMBDA" \
+    $( [[ "$ROI_USE_EYES" == "1" ]] && echo "--roi_use_eyes" ) \
+    $( [[ "$ROI_USE_MOUTH" == "1" ]] && echo "--roi_use_mouth" ) \
+    --roi_size "$ROI_SIZE" \
+    --roi_pad "$ROI_PAD" \
+    --roi_jitter "$ROI_JITTER" \
+    --roi_landmarks_model "$ROI_LANDMARKS_MODEL" \
     --train_encoder \
     --max_steps "$MAX_STEPS_S1"
 }
@@ -299,10 +323,21 @@ run_stage2() {
     --contrastive_id_lambda "$CONTRASTIVE_ID_LAMBDA_S2" \
     --mb_index_path "$MB_INDEX_PATH" \
     --mb_k "$MB_K" \
+    --mb_use_faiss \
+    --mb_top_m "$MB_TOP_M" \
+    --mb_min_sim "$MB_MIN_SIM" \
+    --mb_max_sim "$MB_MAX_SIM" \
     --mb_apply_min_age "$MB_APPLY_MIN_AGE" \
     --mb_apply_max_age "$MB_APPLY_MAX_AGE" \
     --mb_bin_neighbor_radius "$MB_BIN_NEIGHBOR_RADIUS" \
     --mb_temperature "$MB_TEMPERATURE" \
+    --roi_id_lambda "$ROI_ID_LAMBDA" \
+    $( [[ "$ROI_USE_EYES" == "1" ]] && echo "--roi_use_eyes" ) \
+    $( [[ "$ROI_USE_MOUTH" == "1" ]] && echo "--roi_use_mouth" ) \
+    --roi_size "$ROI_SIZE" \
+    --roi_pad "$ROI_PAD" \
+    --roi_jitter "$ROI_JITTER" \
+    --roi_landmarks_model "$ROI_LANDMARKS_MODEL" \
     --resume_checkpoint "$resume_ckpt" \
     --train_decoder \
     --max_steps "$MAX_STEPS_S2" \
