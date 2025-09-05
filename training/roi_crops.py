@@ -99,16 +99,18 @@ class LandmarkCropper:
         return pts  # [68,2]
 
     def rois(self, img_chw: torch.Tensor, pad: float, jitter: float, roi_size: int, train: bool,
-             use_eyes: bool = True, use_mouth: bool = True) -> Dict[str, torch.Tensor]:
+             use_eyes: bool = True, use_mouth: bool = True, return_info: bool = False) -> Dict[str, torch.Tensor]:
         """
         Returns dict of crops {'eyes': [3,H,W], 'mouth': [3,H,W]} resized to roi_size.
         Works with aligned faces; falls back to heuristic boxes if landmarks unavailable.
+        If return_info is True, also returns (crops, {'landmarks_used': bool}).
         """
         H, W = int(img_chw.shape[1]), int(img_chw.shape[2])
         img_u8 = _to_uint8_img(img_chw)  # HWC uint8
 
         pts = self._detect_landmarks(img_u8)
         crops: Dict[str, torch.Tensor] = {}
+        landmarks_used = pts is not None
 
         def _crop_resize(x0: int, y0: int, x1: int, y1: int) -> torch.Tensor:
             c = img_chw[:, y0:y1, x0:x1].unsqueeze(0)  # 1,C,h,w
@@ -140,6 +142,8 @@ class LandmarkCropper:
             if use_mouth:
                 crops["mouth"] = _box_rel(0.35, 0.60, 0.65, 0.86)
 
+        if return_info:
+            return crops, {"landmarks_used": landmarks_used}
         return crops
 
 
