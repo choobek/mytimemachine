@@ -504,7 +504,7 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate my
   --dataset_type ffhq_aging --train_dataset data/train \
   --exp_dir experiments/full_training_run \
   --start_from_encoded_w_plus --train_decoder \
-  --batch_size 2 --workers 2 \
+  --batch_size 2 --workers 2 --test_batch_size 2 --test_workers 2 \
   --target_age uniform_random \
   --max_steps 60000 --image_interval 100 \
   --board_interval 50 --val_interval 500 --val_deterministic --val_max_batches 2 \
@@ -547,3 +547,155 @@ Observations:
 - The contrastive loss is functioning as intended: it is applied only when target ages hit [35,45], with mb_applied_ratio reflecting batch composition. Values are finite and stable, coexisting with NN‑ID.
 - Identity and perceptual/pixel losses are in the same ranges as strong prior Stage‑1 runs by ~19–21k, and weight‑norm is trending into the expected low‑40s band without divergence.
 - If pose/lighting appear too “locked,” consider λ→0.03 and/or τ→0.15, optionally reduce K→16. Otherwise continue through 30k and proceed to a light Stage 2.
+
+Final results (completed Ninth training)
+- Stage 1 — 00058 (encoder+decoder, 0→30k)
+  - Best checkpoints (per timestamp markers):
+    - 22.5k best: loss≈0.936; loss_id_real≈0.304; lpips_real≈0.285; l2_real≈0.0451; w_norm_real≈42.73; loss_contrastive_id≈3.717; mb_applied_ratio≈0.75
+    - 30k: loss≈0.944; loss_id_real≈0.310; lpips_real≈0.289; l2_real≈0.0459; w_norm_real≈41.12; loss_contrastive_id≈3.725; mb_applied_ratio≈0.75
+  - Trends:
+    - Identity/pixel/perceptual steadily improved through ~16.5k–22.5k; late S1 stabilized around loss≈0.94–0.95 with consistent heads
+    - loss_w_norm_real decayed into low‑41–43 by late S1; stable
+    - Contrastive active when ages in window (mb_applied_ratio ~0.75 typical)
+
+- Stage 2 — 00059 (decoder‑only, resume 30k→60k, LR=3e‑5, λ_contrastive=0.02, λ_NN‑ID=0.05)
+  - Best checkpoints (per timestamp markers):
+    - 30.5k–36.5k window improved total loss from ~0.747→0.735
+    - 59k best: loss≈0.733; loss_id_real≈0.303; lpips_real≈0.282; l2_real≈0.0443; w_norm_real≈41.79; loss_contrastive_id≈3.753; mb_applied_ratio≈0.75
+    - 60k final: loss≈0.739; loss_id_real≈0.300; lpips_real≈0.285; l2_real≈0.0463; w_norm_real≈42.04; stable heads
+  - Trends:
+    - Stage 2 provided modest but consistent tightening of total loss (~0.94→~0.73 from late S1 to best S2) driven mainly by pixel/perceptual heads while identity held steady ~0.30–0.31
+    - loss_w_norm_real remained ~41–42, no divergence; contrastive continued to apply when in-range (ratio ~0.75)
+
+Comparative notes vs earlier trainings
+- Identity: Comparable to strong prior Stage‑1 outcomes by ~20–30k; Stage 2 largely preserves ID while improving pixel/perceptual. Prior bests often showed small identity gains in S2; here, identity is steady with clearer LPIPS/L2 tightening.
+- Perceptual/pixel: Matches or slightly improves prior late‑run metrics (LPIPS_real ≈0.282–0.286, L2_real ≈0.044–0.046 at best S2), in line with Seventh/Eighth end‑points.
+- Regularization: w_norm_real in low‑40s band throughout, consistent with stable runs (Seventh/Eighth). No NaN/inf spikes observed.
+- New loss behavior: Contrastive ID loss is consistently non‑zero when applicable and coexists with NN‑ID without instability; mb_applied_ratio patterns align with uniform target ages hitting the [35,45] window frequently.
+
+Actionable follow‑ups
+- If you want slightly less canonicalization: reduce λ_contrastive (e.g., 0.03→0.02 in S1) and/or raise τ to 0.15; optionally reduce K to 16.
+- For identity nudges late S2: briefly raise λ_NN‑ID to 0.07–0.10 for 2–3k steps while monitoring id_improve_real, then restore.
+- Keep current warmup/grad‑clip/nan‑guard; consider small LR plateau early S2 before cosine if you aim for additional perceptual tightening.
+
+Tenth training plan (two-stage) — FAISS semi-hard + ROI-ID
+-------------------------------------
+- Objective: strengthen identity via semi-hard age-aware negatives and micro-identity ROI-ID (eyes+mouth), while keeping aging fidelity.
+- Backend: FAISS cosine mining on age-binned FFHQ bank (global index); ROI-ID with Dlib 68-landmarks (fallback to heuristic boxes if needed).
+- Stage layout:
+  - S1 (encoder phase): extend to 40k total steps to let identity settle with new signals (FAISS + ROI-ID).
+  - S2 (decoder phase): shorten to 55k total (additional 15k) since ROI-ID and FAISS concentrate identity earlier.
+- Key knobs:
+  - FAISS miner: mb_use_faiss, mb_k=64, mb_top_m=512, band 0.20–0.70, radius=0, temperature=0.12, apply ages 35–45.
+  - ROI-ID: roi_id_lambda=0.05, use eyes+mouth, roi_size=112, roi_pad=0.35, roi_jitter=0.06, with Dlib predictor.
+  - Contrastive weights: S1=0.04, S2=0.02 (kept conservative).
+- Expected: mb_neg_sim_mean ~0.35–0.55 early; roi_pairs > 0; gradual drop in loss_roi_id; improved eye/mouth fidelity by ~2k–5k steps.
+
+Stage 1 — encoder to 40k steps
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_encoder \
+  --batch_size 2 --workers 2 --test_batch_size 2 --test_workers 2 \
+  --target_age uniform_random \
+  --max_steps 40000 --image_interval 100 \
+  --board_interval 50 --val_interval 500 --val_deterministic --val_max_batches 2 --val_start_step 2000 --val_disable_aging \
+  --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard \
+  --extrapolation_start_step 1000000000 \
+  --nearest_neighbor_id_loss_lambda 0.1 \
+  --contrastive_id_lambda 0.04 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt \
+  --mb_k 64 --mb_use_faiss --mb_top_m 512 --mb_min_sim 0.20 --mb_max_sim 0.70 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 \
+  --mb_bin_neighbor_radius 0 --mb_temperature 0.12 \
+  --roi_id_lambda 0.05 --roi_use_eyes --roi_use_mouth --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat | cat"
+```
+
+Stage 2 — decoder resume to 55k steps
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_decoder \
+  --batch_size 2 --workers 2 --test_batch_size 2 --test_workers 2 \
+  --target_age uniform_random \
+  --max_steps 55000 --image_interval 100 \
+  --board_interval 50 --val_interval 500 --val_deterministic --val_max_batches 2 \
+  --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 \
+  --aging_lambda 5 --aging_lambda_decoder_scale 0.5 \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard \
+  --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_40000.pt \
+  --nearest_neighbor_id_loss_lambda 0.05 \
+  --contrastive_id_lambda 0.02 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt \
+  --mb_k 64 --mb_use_faiss --mb_top_m 512 --mb_min_sim 0.20 --mb_max_sim 0.70 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 \
+  --mb_bin_neighbor_radius 0 --mb_temperature 0.12 \
+  --roi_id_lambda 0.05 --roi_use_eyes --roi_use_mouth --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
+  --learning_rate 3e-5 | cat"
+```
+
+Tenth training (2-staged) — FAISS semi-hard + ROI-ID — final report
+Runs: S1 → 00039 (encoder+decoder, 0→40k), S2 → 00040 (decoder-only, 40k→55k)
+
+Setup recap (key settings)
+- Stage 1 (00039): id_lambda=0.3; nearest_neighbor_id_loss_lambda=0.10; contrastive_id_lambda=0.04; mb_use_faiss=true (mb_k=64, mb_top_m=512, mb_min_sim=0.20, mb_max_sim=0.70, τ=0.12, age window=[35,45]); ROI‑ID on eyes+mouth (roi_id_lambda=0.05, roi_size=112, roi_pad=0.35, roi_jitter=0.06); extrapolation disabled; adaptive_w_norm_lambda=20; w_norm_lambda=0.003; max_steps=40k; LR=1e‑4; cosine schedule with warmup=500; deterministic val every 500 steps (val_max_batches=2, val_disable_aging).
+- Stage 2 (00040): resume from 00039/iteration_40000.pt; train_decoder only; id_lambda=0.3; nearest_neighbor_id_loss_lambda=0.05; contrastive_id_lambda=0.02; same FAISS miner and ROI‑ID; w_norm_lambda_decoder_scale=0.5; LR=3e‑5; max_steps=55k; same scheduler/val settings.
+
+Stage 1 (00039) — metrics and trends (timestamp.txt)
+- Early snapshot (0→3k): total loss 3.74→1.27; rapid decay across heads; w_norm_real 162→~58.
+- Best checkpoints (selected):
+  - 5k: loss≈1.208; id_real≈0.341; lpips_real≈0.314; l2_real≈0.049; w_norm_real≈54.8; mb≈0.75.
+  - 10.5k: loss≈1.116; id_real≈0.319; lpips_real≈0.302; l2_real≈0.046; w_norm_real≈48.5; mb≈0.75.
+  - 13.5k: loss≈1.083; id_real≈0.320; lpips_real≈0.292; l2_real≈0.0448; w_norm_real≈45.4.
+  - 15.5k: loss≈1.066; id_real≈0.316; lpips_real≈0.288; l2_real≈0.0461; w_norm_real≈44.4.
+  - 18.5k: loss≈1.060; id_real≈0.315; lpips_real≈0.293; l2_real≈0.0474; w_norm_real≈42.0.
+  - 19.0k: loss≈1.049; id_real≈0.317; lpips_real≈0.291; l2_real≈0.0456; w_norm_real≈42.0.
+  - 24.5k: loss≈1.044; id_real≈0.333; lpips_real≈0.292; l2_real≈0.0436; w_norm_real≈39.4.
+  - 26.5k: loss≈1.044 (tie); id_real≈0.311; lpips_real≈0.295; l2_real≈0.0453; w_norm_real≈38.5.
+  - 34.5k: loss≈1.043 (tie/best); id_real≈0.323; lpips_real≈0.290; l2_real≈0.0457; w_norm_real≈37.54; loss_real≈0.645; cycle total≈0.399; mb≈0.75.
+- End of S1 (40k): loss≈1.047; id_real≈0.326; lpips_real≈0.293; l2_real≈0.0457; w_norm_real≈36.99.
+- Trend summary: steady tightening from ~10k onward; mb_applied_ratio ≈0.75 most of the time (age window frequently hit); w_norm_real decayed from ~162→~37 signaling stable, non‑divergent edits; LPIPS/L2 improved monotonically; identity loss stabilized ~0.31–0.33 late S1.
+
+Stage 2 (00040) — metrics and trends (timestamp.txt)
+- Best window: 40k→45k brought the largest gains; later steps mostly plateau.
+- Best checkpoints:
+  - 40.0k: loss≈0.812.
+  - 40.5k: loss≈0.811 (new best).
+  - 45.0k: loss≈0.809 (best of run); id_real≈0.326; lpips_real≈0.291; l2_real≈0.04344; w_norm_real≈37.33; loss_real≈0.463; cycle total≈0.346; mb≈0.75.
+  - 55.0k (final): loss≈0.8091; near the 45k best; minimal late‑phase gains.
+- Trend summary: decoder‑only phase mainly refined pixel/perceptual/cycle while identity held steady ~0.32–0.33; w_norm_real remained in ~37–38 (lower than prior runs), no instability or NaNs; contrastive remained active (consistent 0.75 application).
+
+Comparison vs earlier runs (notably Seventh–Ninth)
+- Identity preservation: while global loss_id_real (~0.30–0.33) is comparable to strong prior runs, visual identity is **better** (eyes/mouth structure, asymmetries) — consistent with ROI‑ID focusing on micro‑regions that global ID metrics under‑weight. User visual check: “definitely better than all previous runs especially in terms of identity preservation.”
+- Pixel/perceptual: LPIPS_real ≈0.291 at best vs Ninth best ≈0.282–0.286 (slightly higher); L2_real ≈0.0434 vs ≈0.0443 (slightly better). Net image crispness comparable or better, with fewer local drifts.
+- Regularization: w_norm_real late S2 ≈37–38 vs ≈41–42 in Ninth — lower latent magnitudes with good stability (no divergence), aligning with cleaner, less “bloated” edits.
+- Total loss comparability: the Tenth run adds ROI‑ID (λ=0.05) on top of contrastive + NN‑ID, so absolute totals are not strictly apples‑to‑apples. Within‑run trends remain consistent and stable.
+
+Qualitative assessment
+- S1 already showed strong identity retention; S2 refined textures without harming identity. Eyes and mouth fidelity noticeably better than previous runs; no recurrent artifacts; age transforms remain consistent.
+
+One‑line summary
+- FAISS semi‑hard mining + ROI‑ID delivered the best visual identity to date with stable training; S2 plateaued around 45k, suggesting earlier stop is efficient.
+
+Actionable next steps
+- Stop S2 around 45–50k unless a clear downward trend appears; most gains arrive by 45k.
+- Optionally nudge ROI‑ID to λ=0.06–0.08 in S1 (keep 0.05 in S2) to further emphasize eyes/mouth, watching for any over‑sharpening.
+- Keep FAISS settings (k=64, top_m=512, band 0.20–0.70); consider logging ROI‑ID head explicitly in timestamp for better at‑a‑glance diagnostics.
+- If you seek minor identity gains late S1: briefly raise id_lambda to 0.35 for last 2–3k, then revert in S2.
+
+Artifacts to revisit quickly
+- Add explicit `loss_roi_id` logging in `timestamp.txt`; current totals include ROI‑ID but no separate head output.

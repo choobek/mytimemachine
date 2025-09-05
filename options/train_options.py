@@ -149,6 +149,21 @@ class TrainOptions:
                                  help='Lower cosine bound for semi-hard negatives.')
         self.parser.add_argument('--mb_max_sim', type=float, default=0.70,
                                  help='Upper cosine bound for negatives.')
+        # ROI-ID micro-loss toggles
+        self.parser.add_argument('--roi_id_lambda', type=float, default=0.0,
+                                 help='Weight for ROI-ID (eyes+mouth) identity loss; 0 disables.')
+        self.parser.add_argument('--roi_size', type=int, default=112,
+                                 help='Crop size (pixels) for IR-SE50.')
+        self.parser.add_argument('--roi_pad', type=float, default=0.35,
+                                 help='Padding ratio around tight eye/mouth boxes (e.g., 0.35 = +35%).')
+        self.parser.add_argument('--roi_jitter', type=float, default=0.08,
+                                 help='Uniform jitter fraction for box center/size during train (0.08 = ±8%).')
+        self.parser.add_argument('--roi_landmarks_model', type=str, default="",
+                                 help='Optional path to Dlib 68-landmark model. Empty = try autodetect or heuristic fallback.')
+        self.parser.add_argument('--roi_use_mouth', action='store_true',
+                                 help='Include mouth ROI in ROI-ID (default off if flag absent).')
+        self.parser.add_argument('--roi_use_eyes', action='store_true',
+                                 help='Include eyes ROI in ROI-ID (default off if flag absent).')
         # curriculum for extrapolation
         self.parser.add_argument('--extrapolation_start_step', default=3000, type=int,
                                  help='Training step to allow any extrapolation')
