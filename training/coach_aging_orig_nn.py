@@ -118,6 +118,13 @@ class Coach:
 		self.mb_apply_min_age = getattr(self.opts, 'mb_apply_min_age', None)
 		self.mb_apply_max_age = getattr(self.opts, 'mb_apply_max_age', None)
 		self.mb_temperature = float(getattr(self.opts, 'mb_temperature', 0.07) or 0.07)
+		# Setup breadcrumbs for miner params
+		try:
+			self.logger.add_text("setup/mb_params",
+				f"k={self.mb_k}, top_m={self.mb_top_m}, min_sim={self.mb_min_sim}, max_sim={self.mb_max_sim}, temp={self.mb_temperature}, age=[{self.mb_apply_min_age},{self.mb_apply_max_age}], use_faiss={self.mb_use_faiss}",
+				self.global_step)
+		except Exception:
+			pass
 
 		# ROI-ID micro-loss configuration
 		self.roi_id_lambda = float(getattr(self.opts, 'roi_id_lambda', 0.0) or 0.0)
@@ -249,15 +256,31 @@ class Coach:
 				for group in self.optimizer.param_groups:
 					for p in group.get('params', []):
 						trainable_params.append(p)
-				self._clip_and_step(self.optimizer, trainable_params)
+				step_ok, grad_norm = self._clip_and_step(self.optimizer, trainable_params)
 				if self.scheduler is not None:
 					self.scheduler.step()
+				# Log LR and grad diagnostics
+				try:
+					current_lr = float(self.optimizer.param_groups[0].get('lr', 0.0))
+					self.logger.add_scalar("train/lr", current_lr, self.global_step)
+				except Exception:
+					current_lr = 0.0
+				self.logger.add_scalar("train/grad_norm", float(grad_norm) if grad_norm is not None else 0.0, self.global_step)
+				self.logger.add_scalar("train/step_skipped", 0 if step_ok else 1, self.global_step)
 
 				# combine the logs of both forwards
 				for idx, cycle_log in enumerate(cycle_id_logs):
 					id_logs[idx].update(cycle_log)
 				loss_dict.update(cycle_loss_dict)
 				loss_dict["loss"] = loss_dict["loss_real"] + loss_dict["loss_cycle"]
+				# Add Priority B metrics to loss_dict for timestamp visibility
+				loss_dict['lr'] = float(current_lr)
+				loss_dict['grad_norm'] = float(grad_norm) if grad_norm is not None else 0.0
+				loss_dict['step_skipped'] = 0 if step_ok else 1
+				flag = 1.0 if no_aging else 0.0
+				self.logger.add_scalar("train/no_aging_flag", flag, self.global_step)
+				loss_dict['no_aging_flag'] = flag
+				loss_dict['no_aging_ratio'] = flag
 
 				# Logging related
 				if self.global_step % self.opts.image_interval == 0 or \
@@ -464,7 +487,7 @@ class Coach:
 		if len(params) == 0:
 			optimizer.step()
 			optimizer.zero_grad(set_to_none=True)
-			return True
+			return True, 0.0
 		if max_norm > 0.0:
 			grad_norm = torch.nn.utils.clip_grad_norm_(params, max_norm)
 		else:
@@ -477,10 +500,10 @@ class Coach:
 		if nan_guard and (not torch.isfinite(torch.as_tensor(grad_norm))):
 			print(f"Warning: grad norm is not finite ({grad_norm}); skipping step at {self.global_step}")
 			optimizer.zero_grad(set_to_none=True)
-			return False
+			return False, float(grad_norm) if grad_norm is not None else float('nan')
 		optimizer.step()
 		optimizer.zero_grad(set_to_none=True)
-		return True
+		return True, float(grad_norm) if grad_norm is not None else 0.0
 
 	def configure_datasets(self):
 		if self.opts.dataset_type not in data_configs.DATASETS.keys():
@@ -554,9 +577,26 @@ class Coach:
 			aging_loss, id_logs = self.aging_loss(y_hat, y, target_ages, id_logs, label=data_type)
 			loss_dict[f'loss_aging_{data_type}'] = float(aging_loss)
 			loss += aging_loss * effective_aging_lambda
+		# Expose effective regularizer weights for diagnostics
+		loss_dict['effective_w_norm_lambda'] = float(effective_w_norm_lambda)
+		loss_dict['effective_aging_lambda'] = float(effective_aging_lambda)
 		# Impostor-only age-aware contrastive ID loss (real pass only)
 		if (data_type == "real"):
 			apply_mask = None
+			# Log interpolation coverage within training age range (for NN-ID visibility)
+			try:
+				interp_ratio = 0.0
+				if hasattr(self, 'train_min_age') and hasattr(self, 'train_max_age') and \
+					self.train_min_age is not None and self.train_max_age is not None:
+					min_age = float(self.train_min_age) / 100.0
+					max_age = float(self.train_max_age) / 100.0
+					mask_interp = (target_ages >= min_age) & (target_ages <= max_age)
+					interp_ratio = float(mask_interp.float().mean().item())
+				self.logger.add_scalar("train/nn_interpolation_ratio", interp_ratio, self.global_step)
+				loss_dict['nn_interpolation_ratio'] = interp_ratio
+			except Exception:
+				self.logger.add_scalar("train/nn_interpolation_ratio", 0.0, self.global_step)
+				loss_dict['nn_interpolation_ratio'] = 0.0
 			try:
 				if (self.mb is not None or self.miner is not None) and self.contrastive_id_lambda > 0:
 					# Convert target ages from [0,1] to integer years [0,100]
@@ -581,12 +621,14 @@ class Coach:
 								device=y_hat.device
 							)
 							self.logger.add_scalar("train/mb_neg_sim_mean", float(sims_sel.mean().item()), self.global_step)
-							# kthvalue expects k>=1; approximate p90 via sorted index
 							flat = sims_sel.flatten()
 							kth = max(1, int(0.9 * flat.numel()))
 							values, _ = torch.topk(flat, kth)
 							p90 = float(values.min().item()) if values.numel() > 0 else 0.0
 							self.logger.add_scalar("train/mb_neg_sim_p90", p90, self.global_step)
+							# Also store to loss_dict for timestamp.txt
+							loss_dict['mb_neg_sim_mean'] = float(sims_sel.mean().item())
+							loss_dict['mb_neg_sim_p90'] = p90
 						else:
 							negs = self.mb.sample(ages_cpu, k=self.mb_k, radius=self.mb_bin_neighbor_radius)
 						negs = negs.to(y_hat.device, non_blocking=True)
@@ -611,7 +653,6 @@ class Coach:
 				else:
 					# Bank disabled; log zeros
 					self.logger.add_scalar("train/loss_contrastive_id", 0.0, self.global_step)
-					# If we can compute mask without bank, base on range only
 					try:
 						target_age_years = torch.clamp((target_ages * 100.0).round().to(torch.int64), 0, 200)
 						apply_mask = torch.ones(y_hat.size(0), dtype=torch.bool, device=y_hat.device)
@@ -628,7 +669,6 @@ class Coach:
 						loss_dict['loss_contrastive_id'] = 0.0
 						loss_dict['mb_applied_ratio'] = 0.0
 			except Exception as e:
-				# Robust to any runtime issues; do not break training
 				try:
 					print(f"Warning: contrastive impostor loss error at step {self.global_step}: {e}")
 				except Exception:
@@ -637,20 +677,25 @@ class Coach:
 				self.logger.add_scalar("train/mb_applied_ratio", 0.0, self.global_step)
 				loss_dict['loss_contrastive_id'] = 0.0
 				loss_dict['mb_applied_ratio'] = 0.0
-			# ROI-ID micro-loss on real pass only
+			# ROI-ID micro-loss on real pass only — include in loss_dict for timestamp visibility
 			if self.roi_id_lambda > 0 and (self.roi_cropper is not None) and (self.roi_use_eyes or self.roi_use_mouth):
 				try:
 					roi_losses = []
 					roi_count = 0
+					roi_eyes = 0
+					roi_mouth = 0
+					landmark_failures = 0
 					x_src = x
 					x_gen = y_hat
 					for b in range(int(x_gen.size(0))):
 						src = x_src[b]
 						gen = x_gen[b]
-						crops_src = self.roi_cropper.rois(src, self.roi_pad, self.roi_jitter, self.roi_size, train=True,
-														use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth)
-						crops_gen = self.roi_cropper.rois(gen, self.roi_pad, self.roi_jitter, self.roi_size, train=True,
-														use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth)
+						crops_src, info_src = self.roi_cropper.rois(src, self.roi_pad, self.roi_jitter, self.roi_size, train=True,
+															use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth, return_info=True)
+						crops_gen, info_gen = self.roi_cropper.rois(gen, self.roi_pad, self.roi_jitter, self.roi_size, train=True,
+															use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth, return_info=True)
+						if not (info_src.get('landmarks_used', False) and info_gen.get('landmarks_used', False)):
+							landmark_failures += 1
 						for key in list(crops_src.keys()):
 							if key in crops_gen:
 								# Use IR-SE50 features; keep grad path to y_hat
@@ -662,23 +707,54 @@ class Coach:
 								loss_roi = (1.0 - cos).mean()
 								roi_losses.append(loss_roi)
 								roi_count += 1
-					if len(roi_losses) > 0:
-						L_roi = torch.stack(roi_losses).mean()
-						loss = loss + self.roi_id_lambda * L_roi
-						self.logger.add_scalar("train/loss_roi_id", float(L_roi.item()), self.global_step)
-						self.logger.add_scalar("train/roi_pairs", int(roi_count), self.global_step)
-					else:
-						self.logger.add_scalar("train/loss_roi_id", 0.0, self.global_step)
-						self.logger.add_scalar("train/roi_pairs", 0, self.global_step)
+								if key == 'eyes':
+									roi_eyes += 1
+								elif key == 'mouth':
+									roi_mouth += 1
+						if len(roi_losses) > 0:
+							L_roi = torch.stack(roi_losses).mean()
+							loss = loss + self.roi_id_lambda * L_roi
+							self.logger.add_scalar("train/loss_roi_id", float(L_roi.item()), self.global_step)
+							self.logger.add_scalar("train/roi_pairs", int(roi_count), self.global_step)
+							self.logger.add_scalar("train/roi_pairs_eyes", int(roi_eyes), self.global_step)
+							self.logger.add_scalar("train/roi_pairs_mouth", int(roi_mouth), self.global_step)
+							self.logger.add_scalar("train/roi_landmark_failures", int(landmark_failures), self.global_step)
+							loss_dict['loss_roi_id'] = float(L_roi.item())
+							loss_dict['roi_pairs'] = int(roi_count)
+							loss_dict['roi_pairs_eyes'] = int(roi_eyes)
+							loss_dict['roi_pairs_mouth'] = int(roi_mouth)
+							loss_dict['roi_landmark_failures'] = int(landmark_failures)
+						else:
+							self.logger.add_scalar("train/loss_roi_id", 0.0, self.global_step)
+							self.logger.add_scalar("train/roi_pairs", 0, self.global_step)
+							self.logger.add_scalar("train/roi_pairs_eyes", 0, self.global_step)
+							self.logger.add_scalar("train/roi_pairs_mouth", 0, self.global_step)
+							self.logger.add_scalar("train/roi_landmark_failures", 0, self.global_step)
+							loss_dict['loss_roi_id'] = 0.0
+							loss_dict['roi_pairs'] = 0
+							loss_dict['roi_pairs_eyes'] = 0
+							loss_dict['roi_pairs_mouth'] = 0
+							loss_dict['roi_landmark_failures'] = 0
 				except Exception:
 					self.logger.add_scalar("train/loss_roi_id", 0.0, self.global_step)
 					self.logger.add_scalar("train/roi_pairs", 0, self.global_step)
+					self.logger.add_scalar("train/roi_pairs_eyes", 0, self.global_step)
+					self.logger.add_scalar("train/roi_pairs_mouth", 0, self.global_step)
+					self.logger.add_scalar("train/roi_landmark_failures", 0, self.global_step)
+					loss_dict['loss_roi_id'] = 0.0
+					loss_dict['roi_pairs'] = 0
+					loss_dict['roi_pairs_eyes'] = 0
+					loss_dict['roi_pairs_mouth'] = 0
+					loss_dict['roi_landmark_failures'] = 0
 		# Nearest-neighbor identity regularizer during interpolation only
 		nn_lambda = float(getattr(self.opts, 'nearest_neighbor_id_loss_lambda', 0.0) or 0.0)
 		if (nn_lambda > 0) and (not no_aging) and self._is_interpolation(target_ages) and (self.feats_dict is not None):
 			nearest_neighbor_id_loss = self._nearest_neighbor_id_loss(y_hat, target_ages)
 			loss_dict['nearest_neighbor_id_loss'] = float(nearest_neighbor_id_loss)
 			loss += nearest_neighbor_id_loss * nn_lambda
+		else:
+			# Ensure metric visibility when inactive
+			loss_dict.setdefault('nearest_neighbor_id_loss', 0.0)
 		loss_dict[f'loss_{data_type}'] = float(loss)
 		if data_type == "cycle":
 			loss = loss * self.opts.cycle_lambda
