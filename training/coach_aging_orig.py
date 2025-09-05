@@ -20,6 +20,7 @@ from criteria.aging_loss import AgingLoss
 from models.psp import pSp
 from training.ranger import Ranger
 import math
+import copy
 
 
 class Coach:
@@ -82,6 +83,38 @@ class Coach:
 		# Build optional scheduler for stability
 		self.scheduler = self._build_scheduler(self.optimizer)
 
+		# EMA configuration (optional)
+		self.ema_enabled = bool(getattr(self.opts, 'ema', False))
+		self.eval_with_ema = bool(getattr(self.opts, 'eval_with_ema', True)) and self.ema_enabled
+		self.ema_decay = float(getattr(self.opts, 'ema_decay', 0.999) or 0.999)
+		self.ema_scope = str(getattr(self.opts, 'ema_scope', 'decoder') or 'decoder')
+		self.ema_helpers = {}
+		if self.ema_enabled:
+			from training.utils.ema import EMAHelper
+			track_modules = {}
+			if self.ema_scope == 'decoder':
+				if hasattr(self.net, 'decoder'):
+					track_modules['decoder'] = self.net.decoder
+			elif self.ema_scope == 'decoder+adapter':
+				if hasattr(self.net, 'decoder'):
+					track_modules['decoder'] = self.net.decoder
+				if hasattr(self.net, 'blender'):
+					track_modules['blender'] = self.net.blender
+			elif self.ema_scope == 'all':
+				candidates = {}
+				if hasattr(self.net, 'encoder'):
+					candidates['encoder'] = self.net.encoder
+				if hasattr(self.net, 'decoder'):
+					candidates['decoder'] = self.net.decoder
+				if hasattr(self.net, 'blender'):
+					candidates['blender'] = self.net.blender
+				for name, mod in candidates.items():
+					any_trainable = any(p.requires_grad for p in mod.parameters(recurse=True))
+					if any_trainable:
+						track_modules[name] = mod
+			for name, mod in track_modules.items():
+				self.ema_helpers[name] = EMAHelper(mod, self.ema_decay)
+
 	def perform_forward_pass(self, x):
 		y_hat, latent = self.net.forward(x, return_latents=True)
 		return y_hat, latent
@@ -141,6 +174,18 @@ class Coach:
 				self._clip_and_step(self.optimizer, trainable_params)
 				if self.scheduler is not None:
 					self.scheduler.step()
+				# EMA update after optimizer step
+				if self.ema_enabled and len(self.ema_helpers) > 0:
+					for name, helper in self.ema_helpers.items():
+						mod = None
+						if name == 'decoder' and hasattr(self.net, 'decoder'):
+							mod = self.net.decoder
+						elif name == 'blender' and hasattr(self.net, 'blender'):
+							mod = self.net.blender
+						elif name == 'encoder' and hasattr(self.net, 'encoder'):
+							mod = self.net.encoder
+						if mod is not None:
+							helper.update(mod)
 
 				# combine the logs of both forwards
 				for idx, cycle_log in enumerate(cycle_id_logs):
@@ -157,12 +202,42 @@ class Coach:
 				if self.global_step % self.opts.board_interval == 0:
 					self.print_metrics(loss_dict, prefix='train')
 					self.log_metrics(loss_dict, prefix='train')
+					# Diagnostics for EMA
+					try:
+						self.logger.add_scalar("train/ema_enabled", 1.0 if self.ema_enabled else 0.0, self.global_step)
+						self.logger.add_scalar("train/ema_decay", float(self.ema_decay) if self.ema_enabled else 0.0, self.global_step)
+					except Exception:
+						pass
 
 				# Validation related
 				val_loss_dict = None
 				val_start_step = int(getattr(self.opts, 'val_start_step', 0) or 0)
 				if (not getattr(self.opts, 'disable_validation', False)) and (self.global_step >= val_start_step) and (self.global_step % self.opts.val_interval == 0 or self.global_step == self.opts.max_steps):
+					used_ema = 0
+					if self.ema_enabled and self.eval_with_ema and len(self.ema_helpers) > 0:
+						orig_states = {}
+						for name, helper in self.ema_helpers.items():
+							mod = None
+							if name == 'decoder' and hasattr(self.net, 'decoder'):
+								mod = self.net.decoder
+							elif name == 'blender' and hasattr(self.net, 'blender'):
+								mod = self.net.blender
+							elif name == 'encoder' and hasattr(self.net, 'encoder'):
+								mod = self.net.encoder
+							if mod is not None:
+								orig_states[name] = copy.deepcopy(mod.state_dict())
+								helper.copy_to(mod)
+						used_ema = 1
 					val_loss_dict = self.validate()
+					if used_ema == 1:
+						for name, state in orig_states.items():
+							if name == 'decoder' and hasattr(self.net, 'decoder'):
+								self.net.decoder.load_state_dict(state, strict=True)
+							elif name == 'blender' and hasattr(self.net, 'blender'):
+								self.net.blender.load_state_dict(state, strict=True)
+							elif name == 'encoder' and hasattr(self.net, 'encoder'):
+								self.net.encoder.load_state_dict(state, strict=True)
+					self.logger.add_scalar("eval/used_ema", float(used_ema), self.global_step)
 					if val_loss_dict and (self.best_val_loss is None or val_loss_dict['loss'] < self.best_val_loss):
 						self.best_val_loss = val_loss_dict['loss']
 						self.checkpoint_me(val_loss_dict, is_best=True)
@@ -177,6 +252,13 @@ class Coach:
 					print('OMG, finished training!')
 					break
 
+				# Append EMA breadcrumbs for timestamp visibility
+				try:
+					loss_dict['ema'] = 'on' if self.ema_enabled else 'off'
+					loss_dict['ema_scope'] = str(self.ema_scope)
+					loss_dict['ema_decay'] = float(self.ema_decay) if self.ema_enabled else 0.0
+				except Exception:
+					pass
 				self.global_step += 1
 
 	def validate(self):
@@ -526,6 +608,17 @@ class Coach:
 				print("Could not determine step from checkpoint name, starting from 0")
 				self.global_step = 0
 		
+		# Restore EMA states if present and EMA enabled
+		if self.ema_enabled and 'ema' in checkpoint:
+			try:
+				ema_states = checkpoint.get('ema', {})
+				for name, helper in self.ema_helpers.items():
+					if name in ema_states:
+						helper.load_state_dict(ema_states[name])
+				print("EMA state restored from checkpoint")
+			except Exception as e:
+				print(f"Warning: failed to restore EMA state: {e}")
+
 		print(f"Checkpoint loaded successfully. Resuming from step {self.global_step}")
 
 	def load_checkpoint_legacy(self, checkpoint_path):
@@ -578,4 +671,12 @@ class Coach:
 		# save the latent avg in state_dict for inference if truncation of w was used during training
 		if self.net.latent_avg is not None:
 			save_dict['latent_avg'] = self.net.latent_avg
+		# Persist EMA states
+		if self.ema_enabled and len(self.ema_helpers) > 0:
+			ema_states = {}
+			for name, helper in self.ema_helpers.items():
+				ema_states[name] = helper.state_dict()
+			save_dict['ema'] = ema_states
+			save_dict['ema_scope'] = str(self.ema_scope)
+			save_dict['ema_decay'] = float(self.ema_decay)
 		return save_dict

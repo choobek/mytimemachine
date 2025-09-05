@@ -25,7 +25,7 @@ GRAD_CLIP_NORM=1.0
 WARMUP_STEPS=500
 MIN_LR=5e-7
 
-# Stage 1 hparams (Tenth training plan)
+# Stage 1 hparams (Eleventh training plan: EMA + ROI schedule)
 ID_LAMBDA_S1=0.3
 LPIPS_LAMBDA_S1=0.1
 LPIPS_LAMBDA_AGING_S1=0.1
@@ -67,6 +67,16 @@ ROI_SIZE=112
 ROI_PAD=0.35
 ROI_JITTER=0.06
 ROI_LANDMARKS_MODEL="pretrained_models/shape_predictor_68_face_landmarks.dat"
+
+# EMA controls (enable EMA on decoder, use during eval)
+EMA_ENABLE=1
+EMA_DECAY=0.999
+EMA_SCOPE="decoder"
+EVAL_WITH_EMA=1
+
+# ROI schedule controls (S1 schedule; S2 fixed)
+ROI_S1_SCHEDULE="0:0.05,20000:0.07,36000:0.05"
+ROI_ID_LAMBDA_S2=0.05
 
 # Stage 2 hparams (Ninth training plan)
 ID_LAMBDA_S2=0.3
@@ -110,7 +120,7 @@ ensure_conda() {
 }
 
 run_stage1_phase1() {
-  log "Stage 1: 0 → ${MAX_STEPS_S1} (Tenth plan: FAISS + ROI-ID)"
+  log "Stage 1: 0 → ${MAX_STEPS_S1} (Eleventh: FAISS + ROI-ID + EMA + ROI schedule)"
   PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
   COACH="$COACH" "$PYTHON_BIN" "$BASE_DIR/scripts/train.py" \
     --dataset_type ffhq_aging \
@@ -169,6 +179,11 @@ run_stage1_phase1() {
     --roi_pad "$ROI_PAD" \
     --roi_jitter "$ROI_JITTER" \
     --roi_landmarks_model "$ROI_LANDMARKS_MODEL" \
+    --roi_id_schedule_s1 "$ROI_S1_SCHEDULE" \
+    $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
+    --ema_scope "$EMA_SCOPE" \
+    --ema_decay "$EMA_DECAY" \
+    $( [[ "$EVAL_WITH_EMA" == "1" ]] && echo "--eval_with_ema" ) \
     --train_encoder \
     --max_steps "$MAX_STEPS_S1"
 }
@@ -216,6 +231,11 @@ run_stage1_phase2() {
     --extrapolation_prob_start "$EXTRAPOLATION_PROB_START_S1" \
     --extrapolation_prob_end "$EXTRAPOLATION_PROB_END_S1" \
     --nearest_neighbor_id_loss_lambda "$NEAREST_NEIGHBOR_ID_LAMBDA_S1" \
+    --roi_id_schedule_s1 "$ROI_S1_SCHEDULE" \
+    $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
+    --ema_scope "$EMA_SCOPE" \
+    --ema_decay "$EMA_DECAY" \
+    $( [[ "$EVAL_WITH_EMA" == "1" ]] && echo "--eval_with_ema" ) \
     --resume_checkpoint "$resume_ckpt" \
     --train_encoder \
     --max_steps 30000
@@ -264,6 +284,11 @@ run_stage1_phase3() {
     --extrapolation_prob_start "$EXTRAPOLATION_PROB_START_S1" \
     --extrapolation_prob_end "$EXTRAPOLATION_PROB_END_S1" \
     --nearest_neighbor_id_loss_lambda 0.25 \
+    --roi_id_schedule_s1 "$ROI_S1_SCHEDULE" \
+    $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
+    --ema_scope "$EMA_SCOPE" \
+    --ema_decay "$EMA_DECAY" \
+    $( [[ "$EVAL_WITH_EMA" == "1" ]] && echo "--eval_with_ema" ) \
     --resume_checkpoint "$resume_ckpt" \
     --train_encoder \
     --max_steps "$MAX_STEPS_S1"
@@ -331,13 +356,17 @@ run_stage2() {
     --mb_apply_max_age "$MB_APPLY_MAX_AGE" \
     --mb_bin_neighbor_radius "$MB_BIN_NEIGHBOR_RADIUS" \
     --mb_temperature "$MB_TEMPERATURE" \
-    --roi_id_lambda "$ROI_ID_LAMBDA" \
+    --roi_id_lambda_s2 "$ROI_ID_LAMBDA_S2" \
     $( [[ "$ROI_USE_EYES" == "1" ]] && echo "--roi_use_eyes" ) \
     $( [[ "$ROI_USE_MOUTH" == "1" ]] && echo "--roi_use_mouth" ) \
     --roi_size "$ROI_SIZE" \
     --roi_pad "$ROI_PAD" \
     --roi_jitter "$ROI_JITTER" \
     --roi_landmarks_model "$ROI_LANDMARKS_MODEL" \
+    $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
+    --ema_scope "$EMA_SCOPE" \
+    --ema_decay "$EMA_DECAY" \
+    $( [[ "$EVAL_WITH_EMA" == "1" ]] && echo "--eval_with_ema" ) \
     --resume_checkpoint "$resume_ckpt" \
     --train_decoder \
     --max_steps "$MAX_STEPS_S2" \
