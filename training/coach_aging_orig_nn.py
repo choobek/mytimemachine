@@ -21,6 +21,7 @@ from criteria.aging_loss import AgingLoss
 from models.psp import pSp
 from training.ranger import Ranger
 import math
+import copy
 
 
 class Coach:
@@ -85,9 +86,7 @@ class Coach:
 		if self.opts.save_interval is None:
 			self.opts.save_interval = self.opts.max_steps
 		
-		# Load checkpoint if resuming
-		if hasattr(opts, 'resume_checkpoint') and opts.resume_checkpoint:
-			self.load_checkpoint(opts.resume_checkpoint)
+		# (moved) Load checkpoint happens after EMA helpers init so EMA can be restored
 
 		# Contrastive impostor bank and options
 		self.contrastive_id_lambda = float(getattr(self.opts, 'contrastive_id_lambda', 0.0) or 0.0)
@@ -144,8 +143,75 @@ class Coach:
 			if not hasattr(self, 'id_loss'):
 				self.id_loss = id_loss.IDLoss().to(self.device).eval()
 
+		# ROI schedule configuration
+		self.cur_roi_lambda = float(self.roi_id_lambda)
+		try:
+			from training.utils.schedules import parse_step_schedule
+			self.roi_s1_schedule = parse_step_schedule(getattr(self.opts, 'roi_id_schedule_s1', None))
+		except Exception:
+			self.roi_s1_schedule = []
+		self.roi_lambda_base = float(getattr(self.opts, 'roi_id_lambda', 0.0) or 0.0)
+		self.roi_lambda_s2 = getattr(self.opts, 'roi_id_lambda_s2', None)
+
+		# EMA configuration
+		self.ema_enabled = bool(getattr(self.opts, 'ema', False))
+		self.eval_with_ema = bool(getattr(self.opts, 'eval_with_ema', True)) and self.ema_enabled
+		self.ema_decay = float(getattr(self.opts, 'ema_decay', 0.999) or 0.999)
+		self.ema_scope = str(getattr(self.opts, 'ema_scope', 'decoder') or 'decoder')
+		self.ema_helpers = {}
+		if self.ema_enabled:
+			from training.utils.ema import EMAHelper
+			track_modules = {}
+			if self.ema_scope == 'decoder':
+				if hasattr(self.net, 'decoder'):
+					track_modules['decoder'] = self.net.decoder
+			elif self.ema_scope == 'decoder+adapter':
+				if hasattr(self.net, 'decoder'):
+					track_modules['decoder'] = self.net.decoder
+				if hasattr(self.net, 'blender'):
+					track_modules['blender'] = self.net.blender
+			elif self.ema_scope == 'all':
+				candidates = {}
+				if hasattr(self.net, 'encoder'):
+					candidates['encoder'] = self.net.encoder
+				if hasattr(self.net, 'decoder'):
+					candidates['decoder'] = self.net.decoder
+				if hasattr(self.net, 'blender'):
+					candidates['blender'] = self.net.blender
+				for name, mod in candidates.items():
+					any_trainable = any(p.requires_grad for p in mod.parameters(recurse=True))
+					if any_trainable:
+						track_modules[name] = mod
+			for name, mod in track_modules.items():
+				self.ema_helpers[name] = EMAHelper(mod, self.ema_decay)
+
+		# Load checkpoint if resuming (after EMA helpers are ready)
+		if hasattr(opts, 'resume_checkpoint') and opts.resume_checkpoint:
+			self.load_checkpoint(opts.resume_checkpoint)
+
 		# Build optional scheduler for stability
 		self.scheduler = self._build_scheduler(self.optimizer)
+
+	def _update_roi_lambda_for_step(self):
+		stage1 = bool(getattr(self.opts, 'train_encoder', False))
+		stage2 = bool(getattr(self.opts, 'train_decoder', False)) and not stage1
+		if stage1:
+			try:
+				from training.utils.schedules import value_for_step
+				val = value_for_step(self.roi_s1_schedule, int(self.global_step))
+				if val is not None:
+					self.cur_roi_lambda = float(val)
+				else:
+					self.cur_roi_lambda = float(self.roi_lambda_base)
+			except Exception:
+				self.cur_roi_lambda = float(self.roi_lambda_base)
+		elif stage2:
+			if self.roi_lambda_s2 is not None:
+				self.cur_roi_lambda = float(self.roi_lambda_s2)
+			else:
+				self.cur_roi_lambda = float(self.roi_lambda_base)
+		else:
+			self.cur_roi_lambda = float(self.roi_lambda_base)
 
 	def _maybe_build_training_features(self):
 		"""
@@ -216,6 +282,9 @@ class Coach:
 				x, y = x.to(self.device).float(), y.to(self.device).float()
 				self.optimizer.zero_grad()
 
+				# Update ROI-ID lambda schedule each step
+				self._update_roi_lambda_for_step()
+
 				input_ages = self.aging_loss.extract_ages(x) / 100.
 
 				# perform no aging in 33% of the time
@@ -259,6 +328,18 @@ class Coach:
 				step_ok, grad_norm = self._clip_and_step(self.optimizer, trainable_params)
 				if self.scheduler is not None:
 					self.scheduler.step()
+				# EMA update after optimizer step
+				if self.ema_enabled and step_ok and len(self.ema_helpers) > 0:
+					for name, helper in self.ema_helpers.items():
+						mod = None
+						if name == 'decoder' and hasattr(self.net, 'decoder'):
+							mod = self.net.decoder
+						elif name == 'blender' and hasattr(self.net, 'blender'):
+							mod = self.net.blender
+						elif name == 'encoder' and hasattr(self.net, 'encoder'):
+							mod = self.net.encoder
+						if mod is not None:
+							helper.update(mod)
 				# Log LR and grad diagnostics
 				try:
 					current_lr = float(self.optimizer.param_groups[0].get('lr', 0.0))
@@ -291,12 +372,48 @@ class Coach:
 				if self.global_step % self.opts.board_interval == 0:
 					self.print_metrics(loss_dict, prefix='train')
 					self.log_metrics(loss_dict, prefix='train')
+					# Diagnostics
+					try:
+						self.logger.add_scalar("train/roi_id_lambda_current", float(self.cur_roi_lambda), self.global_step)
+						self.logger.add_scalar("train/ema_enabled", 1.0 if self.ema_enabled else 0.0, self.global_step)
+						self.logger.add_scalar("train/ema_decay", float(self.ema_decay) if self.ema_enabled else 0.0, self.global_step)
+					except Exception:
+						pass
 
 				# Validation related
 				val_loss_dict = None
 				val_start_step = int(getattr(self.opts, 'val_start_step', 0) or 0)
 				if (not getattr(self.opts, 'disable_validation', False)) and (self.global_step >= val_start_step) and (self.global_step % self.opts.val_interval == 0 or self.global_step == self.opts.max_steps):
+					used_ema = 0
+					if self.ema_enabled and self.eval_with_ema and len(self.ema_helpers) > 0:
+						orig_states = {}
+						for name, helper in self.ema_helpers.items():
+							mod = None
+							if name == 'decoder' and hasattr(self.net, 'decoder'):
+								mod = self.net.decoder
+							elif name == 'blender' and hasattr(self.net, 'blender'):
+								mod = self.net.blender
+							elif name == 'encoder' and hasattr(self.net, 'encoder'):
+								mod = self.net.encoder
+							if mod is not None:
+								orig_states[name] = copy.deepcopy(mod.state_dict())
+								helper.copy_to(mod)
+						used_ema = 1
 					val_loss_dict = self.validate()
+					try:
+						if isinstance(val_loss_dict, dict):
+							val_loss_dict['used_ema'] = float(used_ema)
+					except Exception:
+						pass
+					if used_ema == 1:
+						for name, state in orig_states.items():
+							if name == 'decoder' and hasattr(self.net, 'decoder'):
+								self.net.decoder.load_state_dict(state, strict=True)
+							elif name == 'blender' and hasattr(self.net, 'blender'):
+								self.net.blender.load_state_dict(state, strict=True)
+							elif name == 'encoder' and hasattr(self.net, 'encoder'):
+								self.net.encoder.load_state_dict(state, strict=True)
+					self.logger.add_scalar("eval/used_ema", float(used_ema), self.global_step)
 					if val_loss_dict and (self.best_val_loss is None or val_loss_dict['loss'] < self.best_val_loss):
 						self.best_val_loss = val_loss_dict['loss']
 						self.checkpoint_me(val_loss_dict, is_best=True)
@@ -311,6 +428,14 @@ class Coach:
 					print('OMG, finished training!')
 					break
 
+				# Append breadcrumbs to loss_dict so timestamp.txt shows schedule & EMA info
+				try:
+					loss_dict['roi_lambda_current'] = float(self.cur_roi_lambda)
+					loss_dict['ema'] = 'on' if self.ema_enabled else 'off'
+					loss_dict['ema_scope'] = str(self.ema_scope)
+					loss_dict['ema_decay'] = float(self.ema_decay) if self.ema_enabled else 0.0
+				except Exception:
+					pass
 				self.global_step += 1
 
 	def validate(self):
@@ -413,6 +538,15 @@ class Coach:
 
 	def checkpoint_me(self, loss_dict, is_best):
 		save_name = 'best_model.pt' if is_best else f'iteration_{self.global_step}.pt'
+		# Enrich loss_dict with EMA/ROI breadcrumbs for timestamp visibility
+		try:
+			loss_dict = dict(loss_dict) if isinstance(loss_dict, dict) else {'loss': float(loss_dict)}
+			loss_dict['roi_lambda_current'] = float(getattr(self, 'cur_roi_lambda', getattr(self, 'roi_id_lambda', 0.0)))
+			loss_dict['ema'] = 'on' if getattr(self, 'ema_enabled', False) else 'off'
+			loss_dict['ema_scope'] = str(getattr(self, 'ema_scope', ''))
+			loss_dict['ema_decay'] = float(getattr(self, 'ema_decay', 0.0)) if getattr(self, 'ema_enabled', False) else 0.0
+		except Exception:
+			pass
 		save_dict = self.__get_save_dict()
 		checkpoint_path = os.path.join(self.checkpoint_dir, save_name)
 		torch.save(save_dict, checkpoint_path)
@@ -678,7 +812,7 @@ class Coach:
 				loss_dict['loss_contrastive_id'] = 0.0
 				loss_dict['mb_applied_ratio'] = 0.0
 			# ROI-ID micro-loss on real pass only — include in loss_dict for timestamp visibility
-			if self.roi_id_lambda > 0 and (self.roi_cropper is not None) and (self.roi_use_eyes or self.roi_use_mouth):
+			if (self.cur_roi_lambda > 0 or self.roi_id_lambda > 0) and (self.roi_cropper is not None) and (self.roi_use_eyes or self.roi_use_mouth):
 				try:
 					roi_losses = []
 					roi_count = 0
@@ -713,7 +847,8 @@ class Coach:
 									roi_mouth += 1
 						if len(roi_losses) > 0:
 							L_roi = torch.stack(roi_losses).mean()
-							loss = loss + self.roi_id_lambda * L_roi
+							# Use current scheduled lambda
+							loss = loss + float(self.cur_roi_lambda) * L_roi
 							self.logger.add_scalar("train/loss_roi_id", float(L_roi.item()), self.global_step)
 							self.logger.add_scalar("train/roi_pairs", int(roi_count), self.global_step)
 							self.logger.add_scalar("train/roi_pairs_eyes", int(roi_eyes), self.global_step)
@@ -844,6 +979,17 @@ class Coach:
 				print("Could not determine step from checkpoint name, starting from 0")
 				self.global_step = 0
 		
+		# Restore EMA buffers if present and EMA is enabled
+		if self.ema_enabled and 'ema' in checkpoint:
+			try:
+				ema_states = checkpoint.get('ema', {})
+				for name, helper in self.ema_helpers.items():
+					if name in ema_states:
+						helper.load_state_dict(ema_states[name])
+				print("EMA state restored from checkpoint")
+			except Exception as e:
+				print(f"Warning: failed to restore EMA state: {e}")
+
 		print(f"Checkpoint loaded successfully. Resuming from step {self.global_step}")
 
 	def load_checkpoint_legacy(self, checkpoint_path):
@@ -896,6 +1042,14 @@ class Coach:
 		# save the latent avg in state_dict for inference if truncation of w was used during training
 		if self.net.latent_avg is not None:
 			save_dict['latent_avg'] = self.net.latent_avg
+		# Save EMA helper states if enabled
+		if self.ema_enabled and len(self.ema_helpers) > 0:
+			ema_states = {}
+			for name, helper in self.ema_helpers.items():
+				ema_states[name] = helper.state_dict()
+			save_dict['ema'] = ema_states
+			save_dict['ema_scope'] = str(self.ema_scope)
+			save_dict['ema_decay'] = float(self.ema_decay)
 		return save_dict
 
 

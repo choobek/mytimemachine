@@ -164,6 +164,11 @@ class TrainOptions:
                                  help='Include mouth ROI in ROI-ID (default off if flag absent).')
         self.parser.add_argument('--roi_use_eyes', action='store_true',
                                  help='Include eyes ROI in ROI-ID (default off if flag absent).')
+        # ROI-ID schedule controls
+        self.parser.add_argument('--roi_id_schedule_s1', type=str, default=None,
+                                 help='Stage-1 schedule for ROI-ID lambda as "step:value,..." (e.g., "0:0.05,20000:0.07,36000:0.05").')
+        self.parser.add_argument('--roi_id_lambda_s2', type=float, default=None,
+                                 help='Stage-2 fixed ROI-ID lambda; falls back to --roi_id_lambda if unset.')
         # curriculum for extrapolation
         self.parser.add_argument('--extrapolation_start_step', default=3000, type=int,
                                  help='Training step to allow any extrapolation')
@@ -184,6 +189,19 @@ class TrainOptions:
                                  help='Number of additional steps to train after resuming')
         self.parser.add_argument('--continue_in_same_dir', action='store_true',
                                  help='Continue training in the same directory as the checkpoint')
+
+        # EMA (Exponential Moving Average) controls
+        self.parser.add_argument('--ema', action='store_true',
+                                 help='Enable EMA tracking of selected module weights during training (off by default).')
+        self.parser.add_argument('--ema_decay', type=float, default=0.999,
+                                 help='EMA decay factor. Effective only if --ema is set.')
+        self.parser.add_argument('--ema_scope', type=str, default='decoder', choices=['decoder', 'decoder+adapter', 'all'],
+                                 help='Which modules to track with EMA. "decoder" (default), "decoder+adapter", or "all" (trainable modules in this stage).')
+        self.parser.add_argument('--eval_with_ema', dest='eval_with_ema', action='store_true',
+                                 help='Use EMA weights during validation/eval when EMA is enabled.')
+        self.parser.add_argument('--no_eval_with_ema', dest='eval_with_ema', action='store_false',
+                                 help='Disable using EMA weights during validation/eval.')
+        self.parser.set_defaults(eval_with_ema=True)
         
         
     def parse(self):
