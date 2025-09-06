@@ -32,6 +32,8 @@ class TrainOptions:
                                  help='Batch size for testing and inference')
         self.parser.add_argument('--workers', default=4, type=int,
                                  help='Number of train dataloader workers')
+        self.parser.add_argument('--seed', default=None, type=int,
+                                 help='Global random seed for reproducibility (optional)')
         self.parser.add_argument('--test_workers', default=2, type=int,
                                  help='Number of test/inference dataloader workers')
 
@@ -149,6 +151,10 @@ class TrainOptions:
                                  help='Lower cosine bound for semi-hard negatives.')
         self.parser.add_argument('--mb_max_sim', type=float, default=0.70,
                                  help='Upper cosine bound for negatives.')
+        # Miner preset profile (optional)
+        self.parser.add_argument('--mb_profile', type=str, default='custom',
+                                 choices=['baseline', 'soft', 'soft32', 'custom'],
+                                 help='Preset for miner band and K. custom = use individual flags.')
         # ROI-ID micro-loss toggles
         self.parser.add_argument('--roi_id_lambda', type=float, default=0.0,
                                  help='Weight for ROI-ID (eyes+mouth) identity loss; 0 disables.')
@@ -206,4 +212,22 @@ class TrainOptions:
         
     def parse(self):
         opts = self.parser.parse_args()
+        # Apply miner presets if requested; profile wins over explicit flags
+        profile = getattr(opts, 'mb_profile', 'custom')
+        if profile and profile != 'custom':
+            if profile == 'baseline':
+                opts.mb_k = 64
+                opts.mb_min_sim = 0.20
+                opts.mb_max_sim = 0.70
+            elif profile == 'soft':
+                opts.mb_k = 48
+                opts.mb_min_sim = 0.25
+                opts.mb_max_sim = 0.65
+            elif profile == 'soft32':
+                opts.mb_k = 32
+                opts.mb_min_sim = 0.25
+                opts.mb_max_sim = 0.65
+            else:
+                # Unknown profile (should not happen due to choices); ignore
+                pass
         return opts

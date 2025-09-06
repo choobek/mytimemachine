@@ -83,11 +83,14 @@ class AgeMatchedImpostorMiner:
         top_m: int,
         radius: int,
         device: Optional[torch.device] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, float]]:
         B = q.size(0)
         device = device or q.device
         sel_vecs = torch.empty((B, k, q.size(1)), dtype=torch.float32)
         sel_sims = torch.empty((B, k), dtype=torch.float32)
+        # Diagnostics accumulators
+        per_sample_candidate_counts = []
+        per_sample_k_effective = []
 
         # Global search
         if self.faiss_ok:
@@ -114,6 +117,8 @@ class AgeMatchedImpostorMiner:
             sim_mask = (cand_sim >= float(min_sim)) & (cand_sim <= float(max_sim))
             cand_idx = cand_idx[sim_mask]
             cand_sim = cand_sim[sim_mask]
+            # record post-band candidate count
+            per_sample_candidate_counts.append(int(cand_idx.numel()))
 
             # relax if needed
             r = int(radius)
@@ -151,6 +156,7 @@ class AgeMatchedImpostorMiner:
                 perm = torch.randperm(cand_idx.numel())[:k]
                 take = cand_idx[perm]
                 take_sim = cand_sim[perm]
+                per_sample_k_effective.append(k)
             else:
                 rep = k - cand_idx.numel()
                 if cand_idx.numel() > 0:
@@ -161,10 +167,43 @@ class AgeMatchedImpostorMiner:
                     pad_sim = torch.zeros((rep,), dtype=torch.float32)
                 take = torch.cat([cand_idx, pad], 0)[:k]
                 take_sim = torch.cat([cand_sim, pad_sim], 0)[:k]
+                per_sample_k_effective.append(int(min(k, int(cand_idx.numel()))))
 
             sel_vecs[i] = self.X_all.index_select(0, take).float()
             sel_sims[i] = take_sim.float()
 
-        return sel_vecs.to(device), sel_sims.to(device)
+        # Build miner diagnostics
+        try:
+            flat_sims = sel_sims.flatten()
+            sim_mean = float(flat_sims.mean().item()) if flat_sims.numel() > 0 else 0.0
+            sim_std = float(flat_sims.std(unbiased=False).item()) if flat_sims.numel() > 1 else 0.0
+            sim_p50 = float(torch.quantile(flat_sims, 0.5).item()) if flat_sims.numel() > 0 else 0.0
+            sim_p75 = float(torch.quantile(flat_sims, 0.75).item()) if flat_sims.numel() > 0 else 0.0
+            sim_p90 = float(torch.quantile(flat_sims, 0.90).item()) if flat_sims.numel() > 0 else 0.0
+        except Exception:
+            # Fallback if quantile unsupported
+            sim_mean = float(flat_sims.mean().item()) if flat_sims.numel() > 0 else 0.0
+            sim_std = float(flat_sims.std(unbiased=False).item()) if flat_sims.numel() > 1 else 0.0
+            kth = max(1, int(0.5 * max(1, flat_sims.numel())))
+            sim_p50 = float(torch.kthvalue(flat_sims, kth).values.item()) if flat_sims.numel() > 0 else 0.0
+            kth = max(1, int(0.75 * max(1, flat_sims.numel())))
+            sim_p75 = float(torch.kthvalue(flat_sims, kth).values.item()) if flat_sims.numel() > 0 else 0.0
+            kth = max(1, int(0.90 * max(1, flat_sims.numel())))
+            sim_p90 = float(torch.kthvalue(flat_sims, kth).values.item()) if flat_sims.numel() > 0 else 0.0
+        cand_count_mean = float(torch.as_tensor(per_sample_candidate_counts, dtype=torch.float32).mean().item()) if len(per_sample_candidate_counts) > 0 else 0.0
+        k_eff_mean = float(torch.as_tensor(per_sample_k_effective, dtype=torch.float32).mean().item()) if len(per_sample_k_effective) > 0 else 0.0
+        miner_meta = {
+            "candidate_count": cand_count_mean,
+            "sim_mean": sim_mean,
+            "sim_std": sim_std,
+            "sim_p50": sim_p50,
+            "sim_p75": sim_p75,
+            "sim_p90": sim_p90,
+            "k_effective": k_eff_mean,
+            "band_min": float(min_sim),
+            "band_max": float(max_sim),
+        }
+
+        return sel_vecs.to(device), sel_sims.to(device), miner_meta
 
 

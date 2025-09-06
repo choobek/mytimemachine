@@ -117,10 +117,12 @@ class Coach:
 		self.mb_apply_min_age = getattr(self.opts, 'mb_apply_min_age', None)
 		self.mb_apply_max_age = getattr(self.opts, 'mb_apply_max_age', None)
 		self.mb_temperature = float(getattr(self.opts, 'mb_temperature', 0.07) or 0.07)
+		self.mb_profile = str(getattr(self.opts, 'mb_profile', 'custom') or 'custom')
+		self.last_miner_meta = None
 		# Setup breadcrumbs for miner params
 		try:
 			self.logger.add_text("setup/mb_params",
-				f"k={self.mb_k}, top_m={self.mb_top_m}, min_sim={self.mb_min_sim}, max_sim={self.mb_max_sim}, temp={self.mb_temperature}, age=[{self.mb_apply_min_age},{self.mb_apply_max_age}], use_faiss={self.mb_use_faiss}",
+				f"profile={self.mb_profile}, k={self.mb_k}, top_m={self.mb_top_m}, min_sim={self.mb_min_sim}, max_sim={self.mb_max_sim}, temp={self.mb_temperature}, age=[{self.mb_apply_min_age},{self.mb_apply_max_age}], use_faiss={self.mb_use_faiss}",
 				self.global_step)
 		except Exception:
 			pass
@@ -414,6 +416,19 @@ class Coach:
 							elif name == 'encoder' and hasattr(self.net, 'encoder'):
 								self.net.encoder.load_state_dict(state, strict=True)
 					self.logger.add_scalar("eval/used_ema", float(used_ema), self.global_step)
+					# Append compact miner summary to timestamp.txt at each validation interval
+					try:
+						miner_line = None
+						profile = getattr(self, 'mb_profile', 'custom')
+						if hasattr(self, 'last_miner_meta') and (self.last_miner_meta is not None):
+							m = self.last_miner_meta
+							miner_line = f"mb: prof={profile} k={self.mb_k} band=[{self.mb_min_sim:.2f},{self.mb_max_sim:.2f}] cand≈{m.get('candidate_count', 0.0):.1f} simμ≈{m.get('sim_mean', 0.0):.3f} p75≈{m.get('sim_p75', 0.0):.3f} p90≈{m.get('sim_p90', 0.0):.3f}"
+						else:
+							miner_line = f"mb: prof={profile} k={self.mb_k} band=[{self.mb_min_sim:.2f},{self.mb_max_sim:.2f}]"
+						with open(os.path.join(self.checkpoint_dir, 'timestamp.txt'), 'a') as f:
+							f.write(miner_line + "\n")
+					except Exception:
+						pass
 					if val_loss_dict and (self.best_val_loss is None or val_loss_dict['loss'] < self.best_val_loss):
 						self.best_val_loss = val_loss_dict['loss']
 						self.checkpoint_me(val_loss_dict, is_best=True)
@@ -748,21 +763,35 @@ class Coach:
 						q = self.id_loss.extract_feats(y_hat[apply_mask])  # [b',512]
 						q = F.normalize(q, dim=1)
 						if (self.miner is not None) and self.mb_use_faiss:
-							negs, sims_sel = self.miner.query(
+							negs, sims_sel, miner_meta = self.miner.query(
 								q.detach(), ages_cpu, k=self.mb_k,
 								min_sim=self.mb_min_sim, max_sim=self.mb_max_sim,
 								top_m=self.mb_top_m, radius=self.mb_bin_neighbor_radius,
 								device=y_hat.device
 							)
-							self.logger.add_scalar("train/mb_neg_sim_mean", float(sims_sel.mean().item()), self.global_step)
-							flat = sims_sel.flatten()
-							kth = max(1, int(0.9 * flat.numel()))
-							values, _ = torch.topk(flat, kth)
-							p90 = float(values.min().item()) if values.numel() > 0 else 0.0
-							self.logger.add_scalar("train/mb_neg_sim_p90", p90, self.global_step)
-							# Also store to loss_dict for timestamp.txt
-							loss_dict['mb_neg_sim_mean'] = float(sims_sel.mean().item())
-							loss_dict['mb_neg_sim_p90'] = p90
+							# Log miner diagnostics to TensorBoard (at board interval)
+							try:
+								if (self.global_step % int(getattr(self.opts, 'board_interval', 50) or 50)) == 0:
+									self.logger.add_scalar("train/mb_candidate_count", float(miner_meta.get('candidate_count', 0.0)), self.global_step)
+									self.logger.add_scalar("train/mb_sim_mean", float(miner_meta.get('sim_mean', 0.0)), self.global_step)
+									self.logger.add_scalar("train/mb_sim_std", float(miner_meta.get('sim_std', 0.0)), self.global_step)
+									self.logger.add_scalar("train/mb_sim_p50", float(miner_meta.get('sim_p50', 0.0)), self.global_step)
+									self.logger.add_scalar("train/mb_sim_p75", float(miner_meta.get('sim_p75', 0.0)), self.global_step)
+									self.logger.add_scalar("train/mb_sim_p90", float(miner_meta.get('sim_p90', 0.0)), self.global_step)
+									self.logger.add_scalar("train/mb_k_effective", float(miner_meta.get('k_effective', 0.0)), self.global_step)
+									self.logger.add_scalar("train/mb_band_min", float(miner_meta.get('band_min', self.mb_min_sim)), self.global_step)
+									self.logger.add_scalar("train/mb_band_max", float(miner_meta.get('band_max', self.mb_max_sim)), self.global_step)
+							except Exception:
+								pass
+							# Also store summary stats to loss_dict for timestamp visibility
+							loss_dict['mb_candidate_count'] = float(miner_meta.get('candidate_count', 0.0))
+							loss_dict['mb_sim_mean'] = float(miner_meta.get('sim_mean', 0.0))
+							loss_dict['mb_sim_std'] = float(miner_meta.get('sim_std', 0.0))
+							loss_dict['mb_sim_p50'] = float(miner_meta.get('sim_p50', 0.0))
+							loss_dict['mb_sim_p75'] = float(miner_meta.get('sim_p75', 0.0))
+							loss_dict['mb_sim_p90'] = float(miner_meta.get('sim_p90', 0.0))
+							loss_dict['mb_k_effective'] = float(miner_meta.get('k_effective', 0.0))
+							self.last_miner_meta = miner_meta
 						else:
 							negs = self.mb.sample(ages_cpu, k=self.mb_k, radius=self.mb_bin_neighbor_radius)
 						negs = negs.to(y_hat.device, non_blocking=True)
