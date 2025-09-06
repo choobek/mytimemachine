@@ -49,15 +49,16 @@ MAX_STEPS_S1=40000
 CONTRASTIVE_ID_LAMBDA_S1=0.04
 CONTRASTIVE_ID_LAMBDA_S2=0.02
 MB_INDEX_PATH="banks/ffhq_ir50_age_5y.pt"
-MB_K=64
+# FAISS miner presets (Twelfth plan: softening v2)
+MB_K=48
 MB_APPLY_MIN_AGE=35
 MB_APPLY_MAX_AGE=45
 MB_BIN_NEIGHBOR_RADIUS=0
 MB_TEMPERATURE=0.12
 MB_USE_FAISS=1
-MB_TOP_M=512
-MB_MIN_SIM=0.20
-MB_MAX_SIM=0.70
+MB_TOP_M=768
+MB_MIN_SIM=0.25
+MB_MAX_SIM=0.60
 
 # ROI-ID micro loss (eyes + mouth)
 ROI_ID_LAMBDA=0.05
@@ -180,6 +181,7 @@ run_stage1_phase1() {
     --roi_jitter "$ROI_JITTER" \
     --roi_landmarks_model "$ROI_LANDMARKS_MODEL" \
     --roi_id_schedule_s1 "$ROI_S1_SCHEDULE" \
+    --seed 123 \
     $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
     --ema_scope "$EMA_SCOPE" \
     --ema_decay "$EMA_DECAY" \
@@ -236,6 +238,7 @@ run_stage1_phase2() {
     --ema_scope "$EMA_SCOPE" \
     --ema_decay "$EMA_DECAY" \
     $( [[ "$EVAL_WITH_EMA" == "1" ]] && echo "--eval_with_ema" ) \
+    --seed 123 \
     --resume_checkpoint "$resume_ckpt" \
     --train_encoder \
     --max_steps 30000
@@ -289,6 +292,7 @@ run_stage1_phase3() {
     --ema_scope "$EMA_SCOPE" \
     --ema_decay "$EMA_DECAY" \
     $( [[ "$EVAL_WITH_EMA" == "1" ]] && echo "--eval_with_ema" ) \
+    --seed 123 \
     --resume_checkpoint "$resume_ckpt" \
     --train_encoder \
     --max_steps "$MAX_STEPS_S1"

@@ -6,6 +6,7 @@ import json
 import sys
 import pprint
 import importlib
+import random
 
 sys.path.append(".")
 sys.path.append("..")
@@ -52,9 +53,29 @@ def main():
 	pprint.pprint(opts_dict)
 	with open(os.path.join(opts.exp_dir, 'opt.json'), 'w') as f:
 		json.dump(opts_dict, f, indent=4, sort_keys=True)
+	# Breadcrumb: record miner profile explicitly for visibility
+	try:
+		prof = getattr(opts, 'mb_profile', 'custom')
+		with open(os.path.join(opts.exp_dir, 'miner_profile.txt'), 'w') as f:
+			f.write(str(prof))
+	except Exception:
+		pass
 
 	coach_name = getattr(opts, 'coach', None)
 	CoachClass = get_coach_class(coach_name)
+	# Optional seeding for reproducibility across runs
+	try:
+		if getattr(opts, 'seed', None) is not None:
+			seed = int(opts.seed)
+			random.seed(seed)
+			try:
+				import torch
+				torch.manual_seed(seed)
+				torch.cuda.manual_seed_all(seed)
+			except Exception:
+				pass
+	except Exception:
+		pass
 	coach = CoachClass(opts)
 	coach.train()
 
