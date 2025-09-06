@@ -155,6 +155,39 @@ class Coach:
 		self.roi_lambda_base = float(getattr(self.opts, 'roi_id_lambda', 0.0) or 0.0)
 		self.roi_lambda_s2 = getattr(self.opts, 'roi_id_lambda_s2', None)
 
+		# Geometry loss configuration (scale-invariant shape ratios)
+		self.geom_lambda = float(getattr(self.opts, 'geom_lambda', 0.0) or 0.0)
+		self.geom_stage = str(getattr(self.opts, 'geom_stage', 's1') or 's1')
+		# parts and weights parsing
+		self.geom_parts = tuple([s.strip() for s in str(getattr(self.opts, 'geom_parts', 'eyes,nose,mouth')).split(',') if len(s.strip()) > 0])
+		try:
+			w_str = str(getattr(self.opts, 'geom_weights', '1.0,0.6,0.4'))
+			w_vals = [float(x) for x in w_str.split(',')]
+			while len(w_vals) < 3:
+				w_vals.append(0.0)
+			self.geom_weights = (w_vals[0], w_vals[1], w_vals[2])
+		except Exception:
+			self.geom_weights = (1.0, 0.6, 0.4)
+		self.geom_huber_delta = float(getattr(self.opts, 'geom_huber_delta', 0.03) or 0.03)
+		self.geom_norm = str(getattr(self.opts, 'geom_norm', 'interocular') or 'interocular')
+		self.geom_landmarks_model = str(getattr(self.opts, 'geom_landmarks_model', '') or '')
+		self.geom_enabled = self.geom_lambda > 0.0
+		self.geom_loss = None
+		self.geom_cropper = None
+		if self.geom_enabled:
+			try:
+				from training.losses.geometry_loss import GeometryLoss
+				self.geom_loss = GeometryLoss(parts=self.geom_parts, weights=self.geom_weights, delta=self.geom_huber_delta)
+			except Exception:
+				self.geom_loss = None
+			try:
+				from training.roi_crops import LandmarkCropper
+				# Prefer reusing ROI landmark model path if geometry-specific not provided
+				lm_path = self.geom_landmarks_model or getattr(self.opts, 'roi_landmarks_model', '')
+				self.geom_cropper = LandmarkCropper(lm_path)
+			except Exception:
+				self.geom_cropper = None
+
 		# EMA configuration
 		self.ema_enabled = bool(getattr(self.opts, 'ema', False))
 		self.eval_with_ema = bool(getattr(self.opts, 'eval_with_ema', True)) and self.ema_enabled
@@ -449,6 +482,12 @@ class Coach:
 					loss_dict['ema'] = 'on' if self.ema_enabled else 'off'
 					loss_dict['ema_scope'] = str(self.ema_scope)
 					loss_dict['ema_decay'] = float(self.ema_decay) if self.ema_enabled else 0.0
+					# Geometry config breadcrumbs
+					loss_dict['geom_lambda'] = float(getattr(self, 'geom_lambda', 0.0))
+					loss_dict['geom_stage'] = str(getattr(self, 'geom_stage', 's1'))
+					loss_dict['geom_parts'] = ','.join(list(getattr(self, 'geom_parts', ('eyes','nose','mouth'))))
+					loss_dict['geom_weights'] = ','.join([str(x) for x in list(getattr(self, 'geom_weights', (1.0,0.6,0.4)))])
+					loss_dict['geom_huber_delta'] = float(getattr(self, 'geom_huber_delta', 0.03))
 				except Exception:
 					pass
 				self.global_step += 1
@@ -850,13 +889,31 @@ class Coach:
 					landmark_failures = 0
 					x_src = x
 					x_gen = y_hat
+					# Precompute landmarks batch if geometry is enabled to reuse for ROI crops and geometry ratios
+					pre_pts_src = None
+					pre_pts_gen = None
+					if getattr(self, 'geom_enabled', False) and (getattr(self, 'geom_cropper', None) is not None):
+						try:
+							pre_pts_src = self.geom_cropper.landmarks_batch(x_src)
+							pre_pts_gen = self.geom_cropper.landmarks_batch(x_gen)
+						except Exception:
+							pre_pts_src = None
+							pre_pts_gen = None
 					for b in range(int(x_gen.size(0))):
 						src = x_src[b]
 						gen = x_gen[b]
-						crops_src, info_src = self.roi_cropper.rois(src, self.roi_pad, self.roi_jitter, self.roi_size, train=True,
-															use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth, return_info=True)
-						crops_gen, info_gen = self.roi_cropper.rois(gen, self.roi_pad, self.roi_jitter, self.roi_size, train=True,
-															use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth, return_info=True)
+						if pre_pts_src is not None and pre_pts_gen is not None:
+							crops_src = self.roi_cropper.rois_from_landmarks(src, pre_pts_src[b], self.roi_pad, self.roi_jitter, self.roi_size, train=True,
+																use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth)
+							crops_gen = self.roi_cropper.rois_from_landmarks(gen, pre_pts_gen[b], self.roi_pad, self.roi_jitter, self.roi_size, train=True,
+																use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth)
+							info_src = {'landmarks_used': True}
+							info_gen = {'landmarks_used': True}
+						else:
+							crops_src, info_src = self.roi_cropper.rois(src, self.roi_pad, self.roi_jitter, self.roi_size, train=True,
+																use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth, return_info=True)
+							crops_gen, info_gen = self.roi_cropper.rois(gen, self.roi_pad, self.roi_jitter, self.roi_size, train=True,
+																use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth, return_info=True)
 						if not (info_src.get('landmarks_used', False) and info_gen.get('landmarks_used', False)):
 							landmark_failures += 1
 						for key in list(crops_src.keys()):
@@ -910,6 +967,33 @@ class Coach:
 					loss_dict['roi_pairs_eyes'] = 0
 					loss_dict['roi_pairs_mouth'] = 0
 					loss_dict['roi_landmark_failures'] = 0
+				# Geometry loss (shape ratios) with stage gating and NaN guard
+				try:
+					if getattr(self, 'geom_enabled', False) and (getattr(self, 'geom_loss', None) is not None) and (getattr(self, 'geom_cropper', None) is not None):
+						apply_s1 = (self.geom_stage == 's1' and bool(getattr(self.opts, 'train_encoder', False)))
+						apply_s2 = (self.geom_stage == 's2' and bool(getattr(self.opts, 'train_decoder', False)) and not bool(getattr(self.opts, 'train_encoder', False)))
+						apply_both = (self.geom_stage == 'both')
+						if apply_s1 or apply_s2 or apply_both:
+							land_src = self.geom_cropper.landmarks_batch(x)
+							land_out = self.geom_cropper.landmarks_batch(y_hat)
+							if (land_src is not None) and (land_out is not None):
+								from training.losses.geometry_loss import ratios as geom_ratios
+								g_src = geom_ratios(land_src)
+								g_out = geom_ratios(land_out)
+								L_geom = self.geom_loss(g_out, g_src)
+								if torch.isfinite(L_geom):
+									loss = loss + float(self.geom_lambda) * L_geom
+									self.logger.add_scalar("train/loss_geom", float(L_geom.item()), self.global_step)
+									loss_dict['loss_geom'] = float(L_geom.item())
+								else:
+									self.logger.add_scalar("train/loss_geom", 0.0, self.global_step)
+									loss_dict['loss_geom'] = 0.0
+							else:
+								self.logger.add_scalar("train/loss_geom", 0.0, self.global_step)
+								loss_dict['loss_geom'] = 0.0
+				except Exception:
+					self.logger.add_scalar("train/loss_geom", 0.0, self.global_step)
+					loss_dict['loss_geom'] = 0.0
 		# Nearest-neighbor identity regularizer during interpolation only
 		nn_lambda = float(getattr(self.opts, 'nearest_neighbor_id_loss_lambda', 0.0) or 0.0)
 		if (nn_lambda > 0) and (not no_aging) and self._is_interpolation(target_ages) and (self.feats_dict is not None):

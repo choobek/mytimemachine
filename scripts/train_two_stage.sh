@@ -181,6 +181,7 @@ run_stage1_phase1() {
     --roi_jitter "$ROI_JITTER" \
     --roi_landmarks_model "$ROI_LANDMARKS_MODEL" \
     --roi_id_schedule_s1 "$ROI_S1_SCHEDULE" \
+    --geom_lambda 0.3 --geom_stage s1 --geom_parts eyes,nose,mouth --geom_weights 1.0,0.6,0.4 --geom_huber_delta 0.03 \
     --seed 123 \
     $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
     --ema_scope "$EMA_SCOPE" \

@@ -98,6 +98,24 @@ class LandmarkCropper:
         pts = torch.tensor([(shape.part(i).x, shape.part(i).y) for i in range(68)], dtype=torch.float32)
         return pts  # [68,2]
 
+    def landmarks(self, img_chw: torch.Tensor) -> Optional[torch.Tensor]:
+        """Return 68x2 landmarks for a single CHW tensor or None if detection fails."""
+        img_u8 = _to_uint8_img(img_chw)
+        return self._detect_landmarks(img_u8)
+
+    def landmarks_batch(self, imgs_bchw: torch.Tensor) -> Optional[torch.Tensor]:
+        """Return Bx68x2 landmarks or None if any sample fails (caller may choose to skip batch)."""
+        if imgs_bchw is None:
+            return None
+        B = int(imgs_bchw.shape[0])
+        out = []
+        for b in range(B):
+            pts = self.landmarks(imgs_bchw[b])
+            if pts is None:
+                return None
+            out.append(pts.unsqueeze(0))
+        return torch.cat(out, dim=0)  # [B,68,2]
+
     def rois(self, img_chw: torch.Tensor, pad: float, jitter: float, roi_size: int, train: bool,
              use_eyes: bool = True, use_mouth: bool = True, return_info: bool = False) -> Dict[str, torch.Tensor]:
         """
@@ -144,6 +162,30 @@ class LandmarkCropper:
 
         if return_info:
             return crops, {"landmarks_used": landmarks_used}
+        return crops
+
+    def rois_from_landmarks(self, img_chw: torch.Tensor, pts: torch.Tensor, pad: float, jitter: float,
+                            roi_size: int, train: bool, use_eyes: bool = True, use_mouth: bool = True) -> Dict[str, torch.Tensor]:
+        """Crop ROIs using provided 68x2 landmarks; avoids running detector again."""
+        H, W = int(img_chw.shape[1]), int(img_chw.shape[2])
+        crops: Dict[str, torch.Tensor] = {}
+
+        def _crop_resize(x0: int, y0: int, x1: int, y1: int) -> torch.Tensor:
+            c = img_chw[:, y0:y1, x0:x1].unsqueeze(0)
+            c = F.interpolate(c, size=(roi_size, roi_size), mode="bilinear", align_corners=False)
+            return c.squeeze(0)
+
+        if pts is not None and isinstance(pts, torch.Tensor) and pts.numel() == 68 * 2:
+            if use_eyes:
+                eye_idx = list(range(36, 48))
+                ex0, ey0, ex1, ey1 = _bbox_from_landmarks(pts[eye_idx])
+                ex0, ey0, ex1, ey1 = _expand_pad_jitter(ex0, ey0, ex1, ey1, H, W, pad, jitter, train)
+                crops["eyes"] = _crop_resize(ex0, ey0, ex1, ey1)
+            if use_mouth:
+                m_idx = list(range(48, 68))
+                mx0, my0, mx1, my1 = _bbox_from_landmarks(pts[m_idx])
+                mx0, my0, mx1, my1 = _expand_pad_jitter(mx0, my0, mx1, my1, H, W, pad, jitter, train)
+                crops["mouth"] = _crop_resize(mx0, my0, mx1, my1)
         return crops
 
 
