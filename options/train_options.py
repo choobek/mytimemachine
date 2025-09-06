@@ -175,6 +175,21 @@ class TrainOptions:
                                  help='Stage-1 schedule for ROI-ID lambda as "step:value,..." (e.g., "0:0.05,20000:0.07,36000:0.05").')
         self.parser.add_argument('--roi_id_lambda_s2', type=float, default=None,
                                  help='Stage-2 fixed ROI-ID lambda; falls back to --roi_id_lambda if unset.')
+        # Geometry loss (shape ratios from 68 landmarks)
+        self.parser.add_argument('--geom_lambda', type=float, default=0.0,
+                                 help='Weight for geometry ratio loss; 0 disables (default).')
+        self.parser.add_argument('--geom_stage', type=str, default='s1', choices=['s1', 's2', 'both'],
+                                 help='Apply geometry loss in Stage-1, Stage-2, or both (default: s1).')
+        self.parser.add_argument('--geom_parts', type=str, default='eyes,nose,mouth',
+                                 help='Comma-separated subset of parts to include: eyes,nose,mouth')
+        self.parser.add_argument('--geom_weights', type=str, default='1.0,0.6,0.4',
+                                 help='Comma-separated weights for parts (eyes,nose,mouth order).')
+        self.parser.add_argument('--geom_norm', type=str, default='interocular', choices=['interocular'],
+                                 help="Normalization for ratios; only 'interocular' currently supported.")
+        self.parser.add_argument('--geom_huber_delta', type=float, default=0.03,
+                                 help='Huber threshold (in ratio units) for geometry loss.')
+        self.parser.add_argument('--geom_landmarks_model', type=str, default='',
+                                 help='Optional override path to Dlib 68-landmarks model for geometry/ROI.')
         # curriculum for extrapolation
         self.parser.add_argument('--extrapolation_start_step', default=3000, type=int,
                                  help='Training step to allow any extrapolation')
