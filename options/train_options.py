@@ -161,9 +161,9 @@ class TrainOptions:
         self.parser.add_argument('--roi_size', type=int, default=112,
                                  help='Crop size (pixels) for IR-SE50.')
         self.parser.add_argument('--roi_pad', type=float, default=0.35,
-                                 help='Padding ratio around tight eye/mouth boxes (e.g., 0.35 = +35%).')
+                                 help='Padding ratio around tight eye/mouth boxes (e.g., 0.35 = +35%%).')
         self.parser.add_argument('--roi_jitter', type=float, default=0.08,
-                                 help='Uniform jitter fraction for box center/size during train (0.08 = ±8%).')
+                                 help='Uniform jitter fraction for box center/size during train (0.08 = ±8%%).')
         self.parser.add_argument('--roi_landmarks_model', type=str, default="",
                                  help='Optional path to Dlib 68-landmark model. Empty = try autodetect or heuristic fallback.')
         self.parser.add_argument('--roi_use_mouth', action='store_true',
@@ -175,6 +175,30 @@ class TrainOptions:
                                  help='Stage-1 schedule for ROI-ID lambda as "step:value,..." (e.g., "0:0.05,20000:0.07,36000:0.05").')
         self.parser.add_argument('--roi_id_lambda_s2', type=float, default=None,
                                  help='Stage-2 fixed ROI-ID lambda; falls back to --roi_id_lambda if unset.')
+        # Identity backbone and alignment (Task 5.1)
+        self.parser.add_argument('--id_backbone', type=str, default='ir50', choices=['ir50', 'ir100', 'adaface'],
+                                 help='Identity backbone to use for ID loss (default: ir50).')
+        self.parser.add_argument('--id_backbone_path', type=str, default='',
+                                 help='Optional custom path to ID backbone weights. Empty = use defaults.')
+        self.parser.add_argument('--id_embed_dim', type=int, default=512,
+                                 help='Embedding dimensionality for ID features (default: 512).')
+        self.parser.add_argument('--id_normalize', type=str, default='l2', choices=['l2', 'none'],
+                                 help='Post-process normalization for ID embeddings (default: l2).')
+        self.parser.add_argument('--id_loss_type', type=str, default='cosine', choices=['cosine', 'arcface'],
+                                 help='Identity loss type (default: cosine).')
+        # Alignment options
+        self.parser.add_argument('--id_align', type=str, default='none', choices=['none', 'affine', 'temp'],
+                                 help='Alignment mode for ID features/similarity (default: none).')
+        self.parser.add_argument('--id_align_init_scale', type=float, default=1.0,
+                                 help='Initial gamma for affine feature scaling (default: 1.0).')
+        self.parser.add_argument('--id_align_init_bias', type=float, default=0.0,
+                                 help='Initial beta for affine feature scaling (default: 0.0).')
+        self.parser.add_argument('--id_align_init_temp', type=float, default=0.20,
+                                 help='Initial temperature tau for similarity scaling (default: 0.20).')
+        self.parser.add_argument('--id_align_trainable', action='store_true',
+                                 help='Whether alignment parameters are trainable (default: False).')
+        self.parser.add_argument('--id_align_lr', type=float, default=1e-5,
+                                 help='Learning rate for trainable alignment parameters (default: 1e-5).')
         # Geometry loss (shape ratios from 68 landmarks)
         self.parser.add_argument('--geom_lambda', type=float, default=0.0,
                                  help='Weight for geometry ratio loss; 0 disables (default).')

@@ -56,7 +56,7 @@ MB_APPLY_MAX_AGE=45
 MB_BIN_NEIGHBOR_RADIUS=0
 MB_TEMPERATURE=0.12
 MB_USE_FAISS=1
-MB_TOP_M=768
+MB_TOP_M=512
 MB_MIN_SIM=0.25
 MB_MAX_SIM=0.60
 
@@ -68,6 +68,13 @@ ROI_SIZE=112
 ROI_PAD=0.35
 ROI_JITTER=0.06
 ROI_LANDMARKS_MODEL="pretrained_models/shape_predictor_68_face_landmarks.dat"
+
+# Task 5: ID backbone + alignment (Fifteenth training)
+ID_BACKBONE="ir100"
+ID_ALIGN="temp"
+ID_ALIGN_INIT_TEMP="0.20"
+ID_ALIGN_TRAINABLE=1
+ID_ALIGN_LR=5e-6
 
 # EMA controls (enable EMA on decoder, use during eval)
 EMA_ENABLE=1
@@ -184,6 +191,9 @@ run_stage1_phase1() {
     --geom_lambda 0.3 --geom_stage s1 --geom_parts eyes,nose,mouth --geom_weights 1.0,0.6,0.4 --geom_huber_delta 0.03 \
     --age_anchor_path anchors/actor_w_age5.pt \
     --age_anchor_lambda 0.02 --age_anchor_stage s1 --age_anchor_space w --age_anchor_bin_size 5 \
+    --id_backbone "$ID_BACKBONE" --id_align "$ID_ALIGN" --id_align_init_temp "$ID_ALIGN_INIT_TEMP" \
+    $( [[ "$ID_ALIGN_TRAINABLE" == "1" ]] && echo "--id_align_trainable" ) \
+    --id_align_lr "$ID_ALIGN_LR" \
     --seed 123 \
     $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
     --ema_scope "$EMA_SCOPE" \
@@ -241,6 +251,9 @@ run_stage1_phase2() {
     --ema_scope "$EMA_SCOPE" \
     --ema_decay "$EMA_DECAY" \
     $( [[ "$EVAL_WITH_EMA" == "1" ]] && echo "--eval_with_ema" ) \
+    --id_backbone "$ID_BACKBONE" --id_align "$ID_ALIGN" --id_align_init_temp "$ID_ALIGN_INIT_TEMP" \
+    $( [[ "$ID_ALIGN_TRAINABLE" == "1" ]] && echo "--id_align_trainable" ) \
+    --id_align_lr "$ID_ALIGN_LR" \
     --seed 123 \
     --resume_checkpoint "$resume_ckpt" \
     --train_encoder \
@@ -295,6 +308,9 @@ run_stage1_phase3() {
     --ema_scope "$EMA_SCOPE" \
     --ema_decay "$EMA_DECAY" \
     $( [[ "$EVAL_WITH_EMA" == "1" ]] && echo "--eval_with_ema" ) \
+    --id_backbone "$ID_BACKBONE" --id_align "$ID_ALIGN" --id_align_init_temp "$ID_ALIGN_INIT_TEMP" \
+    $( [[ "$ID_ALIGN_TRAINABLE" == "1" ]] && echo "--id_align_trainable" ) \
+    --id_align_lr "$ID_ALIGN_LR" \
     --seed 123 \
     --resume_checkpoint "$resume_ckpt" \
     --train_encoder \
@@ -374,6 +390,9 @@ run_stage2() {
     --ema_scope "$EMA_SCOPE" \
     --ema_decay "$EMA_DECAY" \
     $( [[ "$EVAL_WITH_EMA" == "1" ]] && echo "--eval_with_ema" ) \
+    --id_backbone "$ID_BACKBONE" --id_align "$ID_ALIGN" --id_align_init_temp "$ID_ALIGN_INIT_TEMP" \
+    $( [[ "$ID_ALIGN_TRAINABLE" == "1" ]] && echo "--id_align_trainable" ) \
+    --id_align_lr "$ID_ALIGN_LR" \
     --resume_checkpoint "$resume_ckpt" \
     --train_decoder \
     --max_steps "$MAX_STEPS_S2" \

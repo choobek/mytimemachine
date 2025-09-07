@@ -23,6 +23,8 @@ from models.psp import pSp
 from training.ranger import Ranger
 import math
 import copy
+from training.id_backbone import IDBackbone, IDAlign
+from training.losses import GlobalIDLoss
 
 
 class Coach:
@@ -46,6 +48,27 @@ class Coach:
 		use_contrastive_impostor = float(getattr(self.opts, 'contrastive_id_lambda', 0.0) or 0.0) > 0
 		if self.opts.id_lambda > 0 or use_nn_lambda or use_contrastive_impostor:
 			self.id_loss = id_loss.IDLoss().to(self.device).eval()
+		# New pluggable ID backbone + alignment for global ID loss (Task 5)
+		try:
+			name = str(getattr(self.opts, 'id_backbone', 'ir50') or 'ir50')
+			wpath = getattr(self.opts, 'id_backbone_path', '') or ''
+			embed_dim = int(getattr(self.opts, 'id_embed_dim', 512) or 512)
+			norm = str(getattr(self.opts, 'id_normalize', 'l2') or 'l2')
+			self.id_backbone = IDBackbone(name=name, weights_path=wpath if len(wpath) > 0 else None,
+										  embed_dim=embed_dim, normalize=norm, input_size=56).to(self.device)
+			align_mode = str(getattr(self.opts, 'id_align', 'none') or 'none')
+			align_scale = float(getattr(self.opts, 'id_align_init_scale', 1.0) or 1.0)
+			align_bias = float(getattr(self.opts, 'id_align_init_bias', 0.0) or 0.0)
+			align_temp = float(getattr(self.opts, 'id_align_init_temp', 0.20) or 0.20)
+			align_trainable = bool(getattr(self.opts, 'id_align_trainable', False))
+			self.id_align = IDAlign(mode=align_mode, scale=align_scale, bias=align_bias, temp=align_temp, trainable=align_trainable).to(self.device)
+			loss_type = str(getattr(self.opts, 'id_loss_type', 'cosine') or 'cosine')
+			self.id_loss_module = GlobalIDLoss(id_encoder=self.id_backbone, align=self.id_align, loss_type=loss_type)
+		except Exception:
+			# In case of any configuration error, fall back to legacy behavior
+			self.id_backbone = None
+			self.id_align = None
+			self.id_loss_module = None
 		if self.opts.w_norm_lambda > 0:
 			self.w_norm_loss = w_norm.WNormLoss(opts=self.opts)
 		if self.opts.aging_lambda > 0:
@@ -100,7 +123,12 @@ class Coach:
 						self.anchor_bins_count = int(anchors_w.size(0))
 						self.anchor_bin_mids = list(bin_mids)
 						self.anchor_enabled = True
-						self.logger.add_text("setup/anchor", f"loaded bins={self.anchor_bins_count} size={self.anchor_bin_size} λ={self.anchor_lambda}", self.global_step)
+						try:
+							# Logger may not be initialized yet; guard to avoid attribute error
+							if hasattr(self, 'logger'):
+								self.logger.add_text("setup/anchor", f"loaded bins={self.anchor_bins_count} size={self.anchor_bin_size} λ={self.anchor_lambda}", self.global_step)
+						except Exception:
+							pass
 						try:
 							with open(os.path.join(self.checkpoint_dir, 'timestamp.txt'), 'a') as f:
 								f.write(f"anchor: bins={self.anchor_bins_count} bin_size={self.anchor_bin_size} space={self.anchor_space} λ={self.anchor_lambda}\n")
@@ -679,10 +707,19 @@ class Coach:
 				p.requires_grad = True
 			params = encoder_params
 
+		# Add alignment parameters if trainable as a separate param group with its own LR
+		param_groups = None
+		if hasattr(self, 'id_align') and self.id_align is not None and bool(getattr(self.opts, 'id_align_trainable', False)):
+			align_params = [p for p in self.id_align.parameters() if p.requires_grad]
+			if len(align_params) > 0:
+				param_groups = [
+					{'params': params, 'lr': self.opts.learning_rate},
+					{'params': align_params, 'lr': float(getattr(self.opts, 'id_align_lr', 1e-5) or 1e-5)}
+				]
 		if self.opts.optim_name == 'adam':
-			optimizer = torch.optim.Adam(params, lr=self.opts.learning_rate)
+			optimizer = torch.optim.Adam(param_groups if param_groups is not None else params, lr=self.opts.learning_rate)
 		else:
-			optimizer = Ranger(params, lr=self.opts.learning_rate)
+			optimizer = Ranger(param_groups if param_groups is not None else params, lr=self.opts.learning_rate)
 		return optimizer
 
 	def _build_scheduler(self, optimizer):
@@ -765,10 +802,19 @@ class Coach:
 			if self.opts.use_weighted_id_loss:  # compute weighted id loss only on forward pass
 				age_diffs = torch.abs(target_ages - input_ages)
 				weights = train_utils.compute_cosine_weights(x=age_diffs)
-			loss_id, sim_improvement, id_logs = self.id_loss(y_hat, y, x, label=data_type, weights=weights)
-			loss_dict[f'loss_id_{data_type}'] = float(loss_id)
-			loss_dict[f'id_improve_{data_type}'] = float(sim_improvement)
-			loss = loss_id * self.opts.id_lambda
+			# Legacy computation for logs
+			loss_id_legacy, sim_improvement, id_logs = self.id_loss(y_hat, y, x, label=data_type, weights=weights)
+			# New global ID loss using pluggable backbone + alignment
+			if getattr(self, 'id_loss_module', None) is not None:
+				loss_id_new, avg_cos_sim = self.id_loss_module(y, y_hat)
+				loss_dict[f'loss_id_{data_type}'] = float(loss_id_new)
+				loss_dict[f'id_sim_mean_{data_type}'] = float(avg_cos_sim)
+				loss_dict[f'id_improve_{data_type}'] = float(sim_improvement)
+				loss = loss_id_new * self.opts.id_lambda
+			else:
+				loss_dict[f'loss_id_{data_type}'] = float(loss_id_legacy)
+				loss_dict[f'id_improve_{data_type}'] = float(sim_improvement)
+				loss = loss_id_legacy * self.opts.id_lambda
 		if self.opts.l2_lambda > 0:
 			loss_l2 = F.mse_loss(y_hat, y)
 			loss_dict[f'loss_l2_{data_type}'] = float(loss_l2)
@@ -1183,6 +1229,12 @@ class Coach:
 				print(f"Warning: failed to restore EMA state: {e}")
 
 		print(f"Checkpoint loaded successfully. Resuming from step {self.global_step}")
+		# Restore ID align state if present
+		try:
+			if hasattr(self, 'id_align') and (self.id_align is not None) and ('id_align_state' in checkpoint):
+				self.id_align.load_state_dict(checkpoint['id_align_state'], strict=False)
+		except Exception:
+			pass
 
 	def load_checkpoint_legacy(self, checkpoint_path):
 		"""Load legacy checkpoint that doesn't have optimizer state"""
@@ -1242,6 +1294,14 @@ class Coach:
 			save_dict['ema'] = ema_states
 			save_dict['ema_scope'] = str(self.ema_scope)
 			save_dict['ema_decay'] = float(self.ema_decay)
+		# Save ID alignment state and metadata (Task 5)
+		try:
+			if hasattr(self, 'id_align') and (self.id_align is not None):
+				save_dict['id_align_state'] = self.id_align.state_dict()
+				save_dict['id_backbone_name'] = str(getattr(self.opts, 'id_backbone', 'ir50'))
+				save_dict['id_backbone_path'] = str(getattr(self.opts, 'id_backbone_path', ''))
+		except Exception:
+			pass
 		return save_dict
 
 
