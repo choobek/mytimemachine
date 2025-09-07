@@ -190,6 +190,17 @@ class TrainOptions:
                                  help='Huber threshold (in ratio units) for geometry loss.')
         self.parser.add_argument('--geom_landmarks_model', type=str, default='',
                                  help='Optional override path to Dlib 68-landmarks model for geometry/ROI.')
+        # Age-conditional actor anchors (Task 4)
+        self.parser.add_argument('--age_anchor_path', type=str, default='',
+                                 help='Path to .pt with per-age-bin anchors; empty disables.')
+        self.parser.add_argument('--age_anchor_lambda', type=float, default=0.0,
+                                 help='Weight for age-anchor loss; 0 disables (default).')
+        self.parser.add_argument('--age_anchor_stage', type=str, default='s1', choices=['s1', 's2', 'both'],
+                                 help='Which stage(s) to apply anchor loss. Default s1.')
+        self.parser.add_argument('--age_anchor_bin_size', type=int, default=5,
+                                 help='Anchor bin size in years; used for sanity checks (default 5).')
+        self.parser.add_argument('--age_anchor_space', type=str, default='w', choices=['w', 'wplus'],
+                                 help='Anchor space (w or wplus). Default w.')
         # curriculum for extrapolation
         self.parser.add_argument('--extrapolation_start_step', default=3000, type=int,
                                  help='Training step to allow any extrapolation')

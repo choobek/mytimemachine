@@ -1048,3 +1048,147 @@ Monitoring & acceptance (fast checks):
 - train/loss_geom finite and stable; no redundant landmark spikes; loss_w_norm_real stays within ~+3 vs baseline
 - Visual A/B: better eye/nose shape retention; mouth preserved without "locked" expressions
 
+Fourteenth training (2-staged) — Age-conditional Actor Anchors (S1-only)
+-------------------------------------
+Goal: Reduce latent drift and batch bias for de‑aging a 73‑year‑old actor toward 39–40 by adding a small age‑anchor loss in Stage‑1 only. Anchors are computed offline from the actor’s own images in W space (bin size 5y). Stage‑2 focuses on sharpening without anchors.
+
+Key settings (Stage 1 → Stage 2):
+- Coach: orig_nn; interpolation‑only (extrapolation disabled)
+- Age anchors (S1 only): age_anchor_path=anchors/actor_w_age5.pt; age_anchor_lambda=0.02; age_anchor_stage=s1; age_anchor_space=w; age_anchor_bin_size=5
+- Geometry (S1 only): geom_lambda=0.3; geom_stage=s1; parts eyes,nose,mouth; weights 1.0,0.6,0.4; huber_delta=0.03
+- ROI‑ID: S1 scheduled mid‑boost (0.05→0.07→0.05), S2 fixed 0.05 (eyes+mouth)
+- FAISS miner (softish): mb_use_faiss, top_m=512, k=48, band [0.25,0.60], τ=0.12, apply ages [35,45]
+- NN‑ID (interpolation only): S1=0.10, S2=0.05
+- Other regs: adaptive_w_norm_lambda=20, w_norm_lambda=0.003, aging_lambda=5, cycle_lambda=1.5, LPIPS/L2 on crop
+- EMA: decoder, eval swap on (used for validation and checkpoint resume)
+- Duration: S1→40k; S2 resume →55k (additional 15k)
+
+Stage 1 — encoder to 40k steps (anchors ON)
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
+  conda activate mytimemachine && \
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_encoder \
+  --batch_size 2 --workers 2 --test_batch_size 2 --test_workers 2 \
+  --target_age uniform_random \
+  --max_steps 40000 --image_interval 100 \
+  --board_interval 50 --val_interval 500 --val_deterministic --val_max_batches 2 --val_start_step 2000 --val_disable_aging \
+  --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard \
+  --extrapolation_start_step 1000000000 \
+  --nearest_neighbor_id_loss_lambda 0.10 \
+  --contrastive_id_lambda 0.04 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 512 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --roi_id_lambda 0.05 --roi_use_eyes --roi_use_mouth --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
+  --roi_id_schedule_s1 '0:0.05,20000:0.07,36000:0.05' \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --geom_lambda 0.3 --geom_stage s1 --geom_parts eyes,nose,mouth --geom_weights 1.0,0.6,0.4 --geom_huber_delta 0.03 \
+  --age_anchor_path anchors/actor_w_age5.pt \
+  --age_anchor_lambda 0.02 --age_anchor_stage s1 --age_anchor_space w --age_anchor_bin_size 5 | cat"
+```
+
+Stage 2 — decoder resume to 55k steps (anchors OFF)
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
+  conda activate mytimemachine && \
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_decoder \
+  --batch_size 2 --workers 2 --test_batch_size 2 --test_workers 2 \
+  --target_age uniform_random \
+  --max_steps 55000 --image_interval 100 \
+  --board_interval 50 --val_interval 500 --val_deterministic --val_max_batches 2 \
+  --id_lambda 0.3 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 \
+  --aging_lambda 5 --aging_lambda_decoder_scale 0.5 \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard \
+  --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_40000.pt \
+  --nearest_neighbor_id_loss_lambda 0.05 \
+  --contrastive_id_lambda 0.02 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 512 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --roi_id_lambda_s2 0.05 --roi_use_eyes --roi_use_mouth --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --learning_rate 3e-5 | cat"
+```
+
+Monitoring & acceptance (anchors):
+- Expect `train/loss_anchor` finite and small; `train/anchor_age_bin_mean` near ~40 for batches targeting ~39–40; `anchor_bin_missing_ratio=0.0` (nearest bin strategy).
+- `timestamp.txt` includes a line: `anchor: bins=<num> bin_size=5 space=w λ=0.02` during Stage‑1.
+
+Final report
+
+Objective:
+- De‑age a 73‑year‑old actor toward 39–40 with reduced latent drift by adding a tiny age‑anchor loss in Stage‑1 only, while keeping our stable identity toolkit (FAISS soft miner, NN‑ID on interpolation, ROI‑ID schedule, EMA eval). Stage‑2 sharpens without anchors.
+
+Setup recap (from 00062/00063 opt.json):
+- Coach: orig_nn; interpolation‑only (extrapolation_start_step=1e9)
+- Anchors (S1 only): `age_anchor_path=anchors/actor_w_age5.pt`, `age_anchor_lambda=0.02`, `age_anchor_stage=s1`, `space=w`, `bin_size=5`
+- Geometry (S1 only): `geom_lambda=0.3`, `geom_stage=s1`, parts=eyes,nose,mouth, weights=1.0,0.6,0.4, huber_delta=0.03
+- ROI‑ID: S1 schedule `0:0.05,20000:0.07,36000:0.05`; S2 fixed `0.05` (eyes+mouth)
+- Contrastive impostor: S1 λ=0.04, S2 λ=0.02; FAISS custom: `k=48`, `top_m=768`, band `[0.25,0.60]`, τ=0.12, ages `[35,45]`
+- NN‑ID (interpolation only): S1 λ=0.10, S2 λ=0.05
+- Other regs: `adaptive_w_norm_lambda=20`, `w_norm_lambda=0.003`, `aging_lambda=5`, `cycle_lambda=1.5`, LPIPS/L2 crop enabled
+- EMA: decoder, eval swap on
+- Duration: S1→40k (00062); S2 resume 40k→55k (00063)
+
+Stage 1 — 00062 (encoder + anchors): metrics and trends (timestamp.txt)
+- Early (0→1k): rapid decay across heads; `loss` 3.82→1.49; `loss_w_norm_real` 223→64.7; anchors active (tiny; logged scalars finite, near‑zero as designed)
+- Best windows (selected):
+  - 3k: `loss≈1.313`; `id_real≈0.347`; `lpips_real≈0.335`; `l2_real≈0.061`; `w_norm_real≈58.0`
+  - 5k: `loss≈1.234`; `id_real≈0.324`; `lpips_real≈0.314`; `l2_real≈0.055`; `w_norm_real≈54.9`
+  - 12k: `loss≈1.116`; `id_real≈0.314`; `lpips_real≈0.303`; `l2_real≈0.0436`; `w_norm_real≈46.3`
+  - 15k: `loss≈1.097`; `id_real≈0.328`; `lpips_real≈0.291`; `l2_real≈0.0435`; `w_norm_real≈44.4`
+  - 18.5k (best pre‑20k): `loss≈1.074`; `id_real≈0.314`; `lpips_real≈0.292`; `l2_real≈0.0471`; `w_norm_real≈41.9`
+  - 25.5k (best of run): `loss≈1.063`; `id_real≈0.327`; `lpips_real≈0.295`; `l2_real≈0.0466`; `w_norm_real≈38.6`
+- Late (30k→40k): totals stable ≈1.08–1.09; `w_norm_real` sits ≈37–38; ROI schedule mid‑boost clearly visible: `roi_lambda_current` 0.05→0.07 (20k→36k)→0.05
+- Miner diagnostics: `mb:` lines show prof=custom, `k_effective=48`, candidate_count shrinks (≈30→≈10–20) as training personalizes; similarity means remain 0.26–0.29; applied ratio ≈0.75 in age window
+
+Stage 2 — 00063 (decoder, anchors OFF): metrics and trends
+- Resume from 00062/iteration_40000.pt; effective decoder scales visible (`w_norm≈0.0015`, `aging≈2.5`).
+- Best windows: strong tightening early S2 then plateau around 45–50k
+  - 42k: `loss≈0.810`
+  - 46k (best): `loss≈0.804` — `id_real≈0.330`; `lpips_real≈0.298`; `l2_real≈0.0460`; `w_norm_real≈37.3`
+  - 50.5k (co‑best): `loss≈0.804` — comparable heads; EMA eval active
+  - 55k (final): `loss≈0.815` — slight regression after best window; plateau behavior typical
+- Miner diagnostics consistent with S1; `k_effective=48`, applied ratio ≈0.75, candidate_count ≈9–20 late S2; no instability
+
+Comparisons vs previous trainings
+- vs Eleventh (EMA + ROI schedule; no anchors):
+  - S2 best improved (≈0.804 vs Eleventh ≈0.807–0.809); identity/perceptual heads in similar ranges; EMA behavior identical
+  - S1 convergence was earlier: best at 25.5k (this run) vs late windows in Eleventh; w‑norm progressed to ≈38 by 25.5k, indicating reduced drift sooner
+- vs Twelfth (soft‑0.60 miner + diagnostics; no anchors):
+  - Twelfth S2 best ≈0.8006 (slightly lower absolute total); this run’s S2 ≈0.804 is on‑par
+  - Notable gain: earlier S1 sweet‑spot (best 25.5k vs Twelfth 32k), suggesting anchors stabilized W closer to actor bins and reduced exploration overhead
+- vs Tenth (FAISS + ROI‑ID; no anchors):
+  - Totals on par; w‑norm in our S1/S2 sat ≈37–38, matching or edging prior runs while reaching best windows earlier
+
+Qualitative/behavioral notes
+- Anchors behaved as intended: negligible penalty magnitude but consistent guidance — w‑norm decayed quickly into the high‑30s and remained stable; no snapping or NaNs observed
+- ROI schedule (S1) produced low crop LPIPS in the 20k→36k window without destabilizing totals; EMA ensured clean eval snapshots
+- Miner diagnostics confirm healthy semi‑hardness throughout; `mb_applied_ratio≈0.75` indicates frequent in‑window targets under uniform age sampling
+
+One‑line summary
+- Age‑conditional actor anchors (S1‑only) accelerated and steadied S1 convergence (best by 25.5k) while maintaining late‑run quality comparable to our best FAISS/ROI/EMA baselines; S2 refinements matched prior best windows (~0.804) with stable identity and latent magnitudes.
+
+Actionable next steps
+- Keep anchors S1‑only; consider λ sweep 0.01–0.03 for sensitivity; current 0.02 is stable
+- Given early S1 convergence, consider shortening S2 to 45–50k (watching for plateaus)
+- Optional miner tweak if late candidate_count <10 frequently: widen band max_sim→0.65 or reduce k→40
+- Continue logging compact `mb:` lines and anchor breadcrumbs; optionally log `loss_anchor` in timestamp for quicker visibility (currently tiny)

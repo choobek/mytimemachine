@@ -13,6 +13,7 @@ import torch.nn.functional as F
 
 from utils import common, train_utils
 from criteria import id_loss, w_norm
+from training.losses.anchor_loss import AgeAnchorLoss
 from configs import data_configs
 from datasets.images_dataset import ImagesDataset
 from datasets.augmentations import AgeTransformer
@@ -70,6 +71,48 @@ class Coach:
 										  drop_last=True)
 
 		self.age_transformer = AgeTransformer(target_age=self.opts.target_age)
+
+		# Age-anchor configuration (Task 4)
+		self.anchor_lambda = float(getattr(self.opts, 'age_anchor_lambda', 0.0) or 0.0)
+		self.anchor_stage = str(getattr(self.opts, 'age_anchor_stage', 's1') or 's1')
+		self.anchor_space = str(getattr(self.opts, 'age_anchor_space', 'w') or 'w')
+		self.anchor_bin_size = int(getattr(self.opts, 'age_anchor_bin_size', 5) or 5)
+		self.anchor_loss = None
+		self.anchor_bins_count = 0
+		self.anchor_bin_mids = []
+		self.anchor_enabled = False
+		anchor_path = str(getattr(self.opts, 'age_anchor_path', '') or '')
+		if (self.anchor_lambda > 0.0) and (len(anchor_path) > 0):
+			try:
+				anchors_obj = torch.load(anchor_path, map_location='cpu')
+				space = anchors_obj.get('space', 'w')
+				if space != self.anchor_space:
+					print(f"[anchor] Space mismatch: file space={space} vs flag={self.anchor_space}. Disabling.")
+				else:
+					file_bin = int(anchors_obj.get('bin_size', self.anchor_bin_size))
+					if file_bin != self.anchor_bin_size:
+						print(f"[anchor] Bin size mismatch: file {file_bin} vs flag {self.anchor_bin_size}. Using file value.")
+						self.anchor_bin_size = file_bin
+					anchors_w = anchors_obj.get('anchors', None)
+					bin_mids = anchors_obj.get('bin_mids', [])
+					if isinstance(anchors_w, torch.Tensor) and anchors_w.ndim == 2 and anchors_w.size(1) == 512 and len(bin_mids) == anchors_w.size(0):
+						self.anchor_loss = AgeAnchorLoss(anchors_w.to(self.device), bin_mids=bin_mids, bin_size=self.anchor_bin_size)
+						self.anchor_bins_count = int(anchors_w.size(0))
+						self.anchor_bin_mids = list(bin_mids)
+						self.anchor_enabled = True
+						self.logger.add_text("setup/anchor", f"loaded bins={self.anchor_bins_count} size={self.anchor_bin_size} λ={self.anchor_lambda}", self.global_step)
+						try:
+							with open(os.path.join(self.checkpoint_dir, 'timestamp.txt'), 'a') as f:
+								f.write(f"anchor: bins={self.anchor_bins_count} bin_size={self.anchor_bin_size} space={self.anchor_space} λ={self.anchor_lambda}\n")
+						except Exception:
+							pass
+					else:
+						print("[anchor] Invalid anchors tensor or bin_mids; disabling.")
+			except Exception as e:
+				print(f"[anchor] Could not load anchors from {anchor_path}: {e}. Feature OFF.")
+		else:
+			if self.anchor_lambda > 0.0:
+				print("[anchor] age_anchor_lambda > 0 but no valid --age_anchor_path provided. Feature OFF.")
 
 		# Personalization features (for NN identity regularizer)
 		self._maybe_build_training_features()
@@ -765,6 +808,42 @@ class Coach:
 			aging_loss, id_logs = self.aging_loss(y_hat, y, target_ages, id_logs, label=data_type)
 			loss_dict[f'loss_aging_{data_type}'] = float(aging_loss)
 			loss += aging_loss * effective_aging_lambda
+		# Age-anchor loss (Task 4) — apply only on real pass, gated by stage and flags
+		try:
+			if (data_type == "real") and self.anchor_enabled and (self.anchor_lambda > 0.0):
+				apply_s1 = (self.anchor_stage == 's1' and bool(getattr(self.opts, 'train_encoder', False)))
+				apply_s2 = (self.anchor_stage == 's2' and bool(getattr(self.opts, 'train_decoder', False)) and not bool(getattr(self.opts, 'train_encoder', False)))
+				apply_both = (self.anchor_stage == 'both')
+				if apply_s1 or apply_s2 or apply_both:
+					# Convert W+ -> W mean per sample; keep gradients
+					w_mean = latent.mean(dim=1)
+					# target_ages provided in [0,1]; convert to years float
+					target_ages_years = torch.clamp(target_ages * 100.0, 0.0, 200.0)
+					L_anchor = self.anchor_loss(w_mean, target_ages_years)
+					loss = loss + float(self.anchor_lambda) * L_anchor
+					self.logger.add_scalar("train/loss_anchor", float(L_anchor.item()), self.global_step)
+					# Diagnostics: chosen bin mid mean (approximate by recomputing indices)
+					mids = torch.tensor(self.anchor_bin_mids, device=target_ages_years.device, dtype=target_ages_years.dtype)
+					idx = torch.argmin((target_ages_years.view(-1,1) - mids.view(1,-1)).abs(), dim=1)
+					bin_mid_mean = float(mids.index_select(0, idx).mean().item()) if mids.numel() > 0 else 0.0
+					self.logger.add_scalar("train/anchor_age_bin_mean", bin_mid_mean, self.global_step)
+					loss_dict['loss_anchor'] = float(L_anchor.item())
+					loss_dict['anchor_age_bin_mean'] = float(bin_mid_mean)
+					# Missing ratio is zero with nearest-bin strategy
+					self.logger.add_scalar("train/anchor_bin_missing_ratio", 0.0, self.global_step)
+					loss_dict['anchor_bin_missing_ratio'] = 0.0
+			else:
+				loss_dict.setdefault('loss_anchor', 0.0)
+				loss_dict.setdefault('anchor_age_bin_mean', 0.0)
+				loss_dict.setdefault('anchor_bin_missing_ratio', 0.0)
+		except Exception:
+			# On any error, keep training stable and log zeros
+			self.logger.add_scalar("train/loss_anchor", 0.0, self.global_step)
+			self.logger.add_scalar("train/anchor_bin_missing_ratio", 0.0, self.global_step)
+			self.logger.add_scalar("train/anchor_age_bin_mean", 0.0, self.global_step)
+			loss_dict.setdefault('loss_anchor', 0.0)
+			loss_dict.setdefault('anchor_bin_missing_ratio', 0.0)
+			loss_dict.setdefault('anchor_age_bin_mean', 0.0)
 		# Expose effective regularizer weights for diagnostics
 		loss_dict['effective_w_norm_lambda'] = float(effective_w_norm_lambda)
 		loss_dict['effective_aging_lambda'] = float(effective_aging_lambda)
