@@ -75,6 +75,27 @@ ID_ALIGN="temp"
 ID_ALIGN_INIT_TEMP="0.20"
 ID_ALIGN_TRAINABLE=1
 ID_ALIGN_LR=5e-6
+ID_BACKBONE_PATH=""
+
+# Auto-select memory bank and weights path by backbone
+case "$ID_BACKBONE" in
+  ir100)
+    MB_INDEX_PATH="banks/ffhq_ir100_age_5y.pt"
+    # Use ArcFace R100 weights if present
+    if [ -f "$BASE_DIR/pretrained_models/arcface_r100_ms1mv3/models/arcface/ms1mv3_arcface_r100_fp16.pth" ]; then
+      ID_BACKBONE_PATH="$BASE_DIR/pretrained_models/arcface_r100_ms1mv3/models/arcface/ms1mv3_arcface_r100_fp16.pth"
+    fi
+    ;;
+  adaface)
+    MB_INDEX_PATH="banks/ffhq_adaface_ir101_age_5y.pt"
+    if [ -f "$BASE_DIR/pretrained_models/adaface_ir101_ms1mv2/pretrained_model/model.pt" ]; then
+      ID_BACKBONE_PATH="$BASE_DIR/pretrained_models/adaface_ir101_ms1mv2/pretrained_model/model.pt"
+    fi
+    ;;
+  ir50|*)
+    MB_INDEX_PATH="banks/ffhq_ir50_age_5y.pt"
+    ;;
+esac
 
 # EMA controls (enable EMA on decoder, use during eval)
 EMA_ENABLE=1
@@ -192,6 +213,7 @@ run_stage1_phase1() {
     --age_anchor_path anchors/actor_w_age5.pt \
     --age_anchor_lambda 0.02 --age_anchor_stage s1 --age_anchor_space w --age_anchor_bin_size 5 \
     --id_backbone "$ID_BACKBONE" --id_align "$ID_ALIGN" --id_align_init_temp "$ID_ALIGN_INIT_TEMP" \
+    $( [[ -n "$ID_BACKBONE_PATH" ]] && echo "--id_backbone_path $ID_BACKBONE_PATH" ) \
     $( [[ "$ID_ALIGN_TRAINABLE" == "1" ]] && echo "--id_align_trainable" ) \
     --id_align_lr "$ID_ALIGN_LR" \
     --seed 123 \
@@ -252,6 +274,7 @@ run_stage1_phase2() {
     --ema_decay "$EMA_DECAY" \
     $( [[ "$EVAL_WITH_EMA" == "1" ]] && echo "--eval_with_ema" ) \
     --id_backbone "$ID_BACKBONE" --id_align "$ID_ALIGN" --id_align_init_temp "$ID_ALIGN_INIT_TEMP" \
+    $( [[ -n "$ID_BACKBONE_PATH" ]] && echo "--id_backbone_path $ID_BACKBONE_PATH" ) \
     $( [[ "$ID_ALIGN_TRAINABLE" == "1" ]] && echo "--id_align_trainable" ) \
     --id_align_lr "$ID_ALIGN_LR" \
     --seed 123 \
@@ -309,6 +332,7 @@ run_stage1_phase3() {
     --ema_decay "$EMA_DECAY" \
     $( [[ "$EVAL_WITH_EMA" == "1" ]] && echo "--eval_with_ema" ) \
     --id_backbone "$ID_BACKBONE" --id_align "$ID_ALIGN" --id_align_init_temp "$ID_ALIGN_INIT_TEMP" \
+    $( [[ -n "$ID_BACKBONE_PATH" ]] && echo "--id_backbone_path $ID_BACKBONE_PATH" ) \
     $( [[ "$ID_ALIGN_TRAINABLE" == "1" ]] && echo "--id_align_trainable" ) \
     --id_align_lr "$ID_ALIGN_LR" \
     --seed 123 \
@@ -391,6 +415,7 @@ run_stage2() {
     --ema_decay "$EMA_DECAY" \
     $( [[ "$EVAL_WITH_EMA" == "1" ]] && echo "--eval_with_ema" ) \
     --id_backbone "$ID_BACKBONE" --id_align "$ID_ALIGN" --id_align_init_temp "$ID_ALIGN_INIT_TEMP" \
+    $( [[ -n "$ID_BACKBONE_PATH" ]] && echo "--id_backbone_path $ID_BACKBONE_PATH" ) \
     $( [[ "$ID_ALIGN_TRAINABLE" == "1" ]] && echo "--id_align_trainable" ) \
     --id_align_lr "$ID_ALIGN_LR" \
     --resume_checkpoint "$resume_ckpt" \

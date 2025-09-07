@@ -1227,7 +1227,7 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
   --extrapolation_start_step 1000000000 \
   --nearest_neighbor_id_loss_lambda 0.10 \
   --contrastive_id_lambda 0.04 \
-  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_index_path banks/ffhq_ir100_age_5y.pt --mb_use_faiss \
   --mb_top_m 512 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
   --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
   --roi_id_lambda 0.05 --roi_use_eyes --roi_use_mouth --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
@@ -1261,7 +1261,7 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
   --resume_checkpoint experiments/task5_ir100_temp/000XX/checkpoints/iteration_40000.pt \
   --nearest_neighbor_id_loss_lambda 0.05 \
   --contrastive_id_lambda 0.02 \
-  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_index_path banks/ffhq_ir100_age_5y.pt --mb_use_faiss \
   --mb_top_m 512 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
   --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
   --roi_id_lambda_s2 0.05 --roi_use_eyes --roi_use_mouth --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
@@ -1309,7 +1309,7 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
   --extrapolation_start_step 1000000000 \
   --nearest_neighbor_id_loss_lambda 0.10 \
   --contrastive_id_lambda 0.04 \
-  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_index_path banks/ffhq_adaface_ir101_age_5y.pt --mb_use_faiss \
   --mb_top_m 512 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
   --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
   --roi_id_lambda 0.05 --roi_use_eyes --roi_use_mouth --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
@@ -1344,7 +1344,7 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
   --resume_checkpoint experiments/task5_adaface_temp/000XX/checkpoints/iteration_40000.pt \
   --nearest_neighbor_id_loss_lambda 0.05 \
   --contrastive_id_lambda 0.02 \
-  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_index_path banks/ffhq_adaface_ir101_age_5y.pt --mb_use_faiss \
   --mb_top_m 512 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
   --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
   --roi_id_lambda_s2 0.05 --roi_use_eyes --roi_use_mouth --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \

@@ -19,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 from configs.transforms_config import AgingTransforms
 from criteria.id_loss import IDLoss
 from criteria.aging_loss import AgingLoss
+from training.id_backbone import IDBackbone
 
 
 def parse_args():
@@ -34,6 +35,9 @@ def parse_args():
     p.add_argument('--quality-filter', type=str, default='')  # e.g. 'laplacian:100.0'
     p.add_argument('--actor-center', type=Path, default=None)
     p.add_argument('--actor-max-cos', type=float, default=0.65)
+    # Identity backbone selection to match training backbone
+    p.add_argument('--id_backbone', type=str, default='ir50', choices=['ir50', 'ir100', 'adaface'])
+    p.add_argument('--id_backbone_path', type=str, default='')
     return p.parse_args()
 
 
@@ -62,7 +66,15 @@ class FFHQAlignedDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, float, str]:
         p = self.files[idx]
-        im = Image.open(p).convert('RGB')
+        try:
+            im = Image.open(p)
+            im.load()
+            im = im.convert('RGB')
+        except Exception:
+            # Return a dummy sample that will be filtered by quality or skipped upstream
+            # Create a tiny valid image tensor to avoid crashing the DataLoader
+            dummy = Image.new('RGB', (256, 256), color=(0, 0, 0))
+            im = dummy
         x = self.transform(im)
         if self.compute_lap:
             lv = laplacian_var(np.array(im))
@@ -81,7 +93,29 @@ def main():
 
     # Models identical to training
     device = torch.device(a.device if a.device != 'cuda' or torch.cuda.is_available() else 'cpu')
-    id_extractor = IDLoss().to(device).eval()
+    # Use requested backbone to ensure the bank matches the training identity space
+    if a.id_backbone and a.id_backbone.lower() != 'ir50':
+        id_extractor = IDBackbone(name=a.id_backbone.lower().strip(),
+                                  weights_path=a.id_backbone_path if len(a.id_backbone_path) > 0 else None,
+                                  embed_dim=512, normalize='l2', input_size=56).to(device).eval()
+        # Wrap with a simple shim to reuse downstream extract_feats calls
+        class _Wrap:
+            def __init__(self, enc):
+                self.enc = enc
+                self._pool = torch.nn.AdaptiveAvgPool2d((256, 256))
+                self._crop = True
+            @torch.no_grad()
+            def extract_feats(self, x: torch.Tensor) -> torch.Tensor:
+                if x.shape[2] != 256 or x.shape[3] != 256:
+                    x = self._pool(x)
+                if self._crop:
+                    x = x[:, :, 35:223, 32:220]
+                feats = self.enc(x)
+                return feats
+        id_extractor = _Wrap(id_extractor)
+    else:
+        # Default legacy IR-SE50 extractor
+        id_extractor = IDLoss().to(device).eval()
     age_estimator = AgingLoss(opts=None).to(device).eval()
 
     # Optional paranoia filter
@@ -166,7 +200,7 @@ def main():
         'ages': out_ages,
         'meta': {
             'norm': 'l2',
-            'embed': 'ir_se50',
+            'embed': (a.id_backbone.lower().strip() if a.id_backbone else 'ir_se50'),
             'age_model': 'dex_vgg',
             'bin_size': a.bin_size,
             'min_age': a.min_age,
