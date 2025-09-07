@@ -18,6 +18,7 @@ supplementary*
 weights
 output_*
 *.csv
+banks/
 age_dataset
 README_*.md
 !assets/
