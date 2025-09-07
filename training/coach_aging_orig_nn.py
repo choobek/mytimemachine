@@ -319,6 +319,22 @@ class Coach:
 		else:
 			self.cur_roi_lambda = float(self.roi_lambda_base)
 
+	def _extract_id_features(self, images: torch.Tensor) -> torch.Tensor:
+		"""Unified ID feature extractor matching configured backbone.
+
+		Preprocess to 256 then crop [35:223, 32:220] to mirror legacy pipeline.
+		Falls back to legacy IR-SE50 extractor if pluggable backbone is unavailable.
+		"""
+		if not hasattr(self, '_pool256'):
+			self._pool256 = nn.AdaptiveAvgPool2d((256, 256))
+		x = images
+		if x.shape[2] != 256 or x.shape[3] != 256:
+			x = self._pool256(x)
+		x = x[:, :, 35:223, 32:220]
+		if getattr(self, 'id_backbone', None) is not None:
+			return self.id_backbone(x)
+		return self.id_loss.extract_feats(x)
+
 	def _maybe_build_training_features(self):
 		"""
 		Build feature dictionary keyed by ground-truth ages to support nearest-neighbor
@@ -336,7 +352,7 @@ class Coach:
 		processed = 0
 		for x_img, _, x_path, _ in self.train_dataset:
 			img = x_img.unsqueeze(0).to(self.device)
-			feat = self.id_loss.extract_feats(img)  # shape [1, 512]
+			feat = self._extract_id_features(img)  # shape [1, 512]
 			x_age = self.aging_loss.extract_ages_gt(x_path) / 100
 			key = round(float(x_age.item()), 2)
 			# store CPU tensors to conserve GPU memory
@@ -368,7 +384,7 @@ class Coach:
 	def _nearest_neighbor_id_loss(self, y_hat, target_ages):
 		"""Compute nearest-neighbor identity loss for each sample and average."""
 		# Extract features for current outputs
-		reconstructed_feats = self.id_loss.extract_feats(y_hat)  # [b, 512]
+		reconstructed_feats = self._extract_id_features(y_hat)  # [b, 512]
 		max_sims = []
 		for i in range(y_hat.shape[0]):
 			closest_age = min(self.feats_dict.keys(), key=lambda a: abs(a - float(target_ages[i].item())))
@@ -924,7 +940,7 @@ class Coach:
 						# Sample negatives for active subset on CPU (avoid cross-device mask indexing)
 						ages_cpu = target_age_years[apply_mask].detach().to("cpu")
 						# Compute query embeddings with gradients flowing to generator
-						q = self.id_loss.extract_feats(y_hat[apply_mask])  # [b',512]
+						q = self._extract_id_features(y_hat[apply_mask])  # [b',512]
 						q = F.normalize(q, dim=1)
 						if (self.miner is not None) and self.mb_use_faiss:
 							negs, sims_sel, miner_meta = self.miner.query(
@@ -1044,8 +1060,8 @@ class Coach:
 						for key in list(crops_src.keys()):
 							if key in crops_gen:
 								# Use IR-SE50 features; keep grad path to y_hat
-								e_src = self.id_loss.extract_feats(crops_src[key].unsqueeze(0).to(self.device))
-								e_gen = self.id_loss.extract_feats(crops_gen[key].unsqueeze(0).to(self.device))
+								e_src = self._extract_id_features(crops_src[key].unsqueeze(0).to(self.device))
+								e_gen = self._extract_id_features(crops_gen[key].unsqueeze(0).to(self.device))
 								e_src = F.normalize(e_src, dim=1)
 								e_gen = F.normalize(e_gen, dim=1)
 								cos = torch.sum(e_src * e_gen, dim=1)  # [1]
