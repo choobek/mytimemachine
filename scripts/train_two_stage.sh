@@ -16,6 +16,7 @@ TEST_BATCH_SIZE=2
 TEST_WORKERS=2
 VAL_INTERVAL=500
 SAVE_INTERVAL=1000
+BOARD_INTERVAL=50
 INPUT_NC=4
 TARGET_AGE="uniform_random"
 CHECKPOINT_PATH="pretrained_models/sam_ffhq_aging.pt"
@@ -50,15 +51,15 @@ CONTRASTIVE_ID_LAMBDA_S1=0.04
 CONTRASTIVE_ID_LAMBDA_S2=0.02
 MB_INDEX_PATH="banks/ffhq_ir50_age_5y.pt"
 # FAISS miner presets (Twelfth plan: softening v2)
-MB_K=48
+MB_K=32
 MB_APPLY_MIN_AGE=35
 MB_APPLY_MAX_AGE=45
-MB_BIN_NEIGHBOR_RADIUS=0
+MB_BIN_NEIGHBOR_RADIUS=2
 MB_TEMPERATURE=0.12
 MB_USE_FAISS=1
-MB_TOP_M=512
-MB_MIN_SIM=0.25
-MB_MAX_SIM=0.60
+MB_TOP_M=1000
+MB_MIN_SIM=0.05
+MB_MAX_SIM=0.65
 
 # ROI-ID micro loss (eyes + mouth)
 ROI_ID_LAMBDA=0.05
@@ -158,6 +159,7 @@ run_stage1_phase1() {
     --test_batch_size "$TEST_BATCH_SIZE" \
     --test_workers "$TEST_WORKERS" \
     --val_interval "$VAL_INTERVAL" \
+    --board_interval "$BOARD_INTERVAL" \
     --save_interval "$SAVE_INTERVAL" \
     --start_from_encoded_w_plus \
     --id_lambda "$ID_LAMBDA_S1" \
@@ -193,7 +195,7 @@ run_stage1_phase1() {
     --contrastive_id_lambda "$CONTRASTIVE_ID_LAMBDA_S1" \
     --mb_index_path "$MB_INDEX_PATH" \
     --mb_k "$MB_K" \
-    --mb_use_faiss \
+    $( [[ "$MB_USE_FAISS" == "1" ]] && echo "--mb_use_faiss" ) \
     --mb_top_m "$MB_TOP_M" \
     --mb_min_sim "$MB_MIN_SIM" \
     --mb_max_sim "$MB_MAX_SIM" \
@@ -236,6 +238,7 @@ run_stage1_phase2() {
     --test_batch_size "$TEST_BATCH_SIZE" \
     --test_workers "$TEST_WORKERS" \
     --val_interval "$VAL_INTERVAL" \
+    --board_interval "$BOARD_INTERVAL" \
     --save_interval "$SAVE_INTERVAL" \
     --start_from_encoded_w_plus \
     --id_lambda "$ID_LAMBDA_S1" \
@@ -294,6 +297,7 @@ run_stage1_phase3() {
     --test_batch_size "$TEST_BATCH_SIZE" \
     --test_workers "$TEST_WORKERS" \
     --val_interval "$VAL_INTERVAL" \
+    --board_interval "$BOARD_INTERVAL" \
     --save_interval "$SAVE_INTERVAL" \
     --start_from_encoded_w_plus \
     --id_lambda "$ID_LAMBDA_S1" \
@@ -358,6 +362,7 @@ run_stage2() {
     --test_batch_size "$TEST_BATCH_SIZE" \
     --test_workers "$TEST_WORKERS" \
     --val_interval "$VAL_INTERVAL" \
+    --board_interval "$BOARD_INTERVAL" \
     --save_interval "$SAVE_INTERVAL" \
     --start_from_encoded_w_plus \
     --id_lambda "$ID_LAMBDA_S2" \
@@ -395,7 +400,7 @@ run_stage2() {
     --contrastive_id_lambda "$CONTRASTIVE_ID_LAMBDA_S2" \
     --mb_index_path "$MB_INDEX_PATH" \
     --mb_k "$MB_K" \
-    --mb_use_faiss \
+    $( [[ "$MB_USE_FAISS" == "1" ]] && echo "--mb_use_faiss" ) \
     --mb_top_m "$MB_TOP_M" \
     --mb_min_sim "$MB_MIN_SIM" \
     --mb_max_sim "$MB_MAX_SIM" \

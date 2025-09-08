@@ -935,6 +935,17 @@ class Coach:
 						apply_mask &= (target_age_years.to(y_hat.device) >= int(self.mb_apply_min_age))
 					if self.mb_apply_max_age is not None:
 						apply_mask &= (target_age_years.to(y_hat.device) <= int(self.mb_apply_max_age))
+					# Debug: log apply window and mask size
+					try:
+						apply_count = int(apply_mask.sum().item())
+						bmin = self.mb_apply_min_age
+						bmax = self.mb_apply_max_age
+						tmin = int(target_age_years.min().item()) if target_age_years.numel() > 0 else 0
+						tmax = int(target_age_years.max().item()) if target_age_years.numel() > 0 else 0
+						self.logger.add_text("train/mb_apply_window", f"age=[{bmin},{bmax}] target=[{tmin},{tmax}] apply_count={apply_count}", self.global_step)
+						loss_dict['mb_apply_mask_count'] = float(apply_count)
+					except Exception:
+						pass
 					loss_contrast = torch.tensor(0.0, device=y_hat.device)
 					if apply_mask.any():
 						# Sample negatives for active subset on CPU (avoid cross-device mask indexing)
@@ -949,6 +960,13 @@ class Coach:
 								top_m=self.mb_top_m, radius=self.mb_bin_neighbor_radius,
 								device=y_hat.device
 							)
+							# Debug bank size
+							try:
+								bsize = int(self.miner.X_all.size(0)) if hasattr(self.miner, 'X_all') else 0
+								self.logger.add_scalar("train/mb_bank_size", float(bsize), self.global_step)
+								loss_dict['mb_bank_size'] = float(bsize)
+							except Exception:
+								pass
 							# Log miner diagnostics to TensorBoard (at board interval)
 							try:
 								if (self.global_step % int(getattr(self.opts, 'board_interval', 50) or 50)) == 0:
