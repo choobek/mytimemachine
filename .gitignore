@@ -17,6 +17,7 @@ supplementary*
 *.ipynb
 weights
 output_*
+banks/
 *.csv
 age_dataset
 README_*.md
