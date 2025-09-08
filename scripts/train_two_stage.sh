@@ -60,10 +60,12 @@ MB_TOP_M=768
 MB_MIN_SIM=0.25
 MB_MAX_SIM=0.60
 
-# ROI-ID micro loss (eyes + mouth)
+# ROI-ID micro loss (eyes + mouth + optional extras)
 ROI_ID_LAMBDA=0.05
 ROI_USE_EYES=1
 ROI_USE_MOUTH=1
+ROI_USE_NOSE=1
+ROI_USE_BROWEYES=1
 ROI_SIZE=112
 ROI_PAD=0.35
 ROI_JITTER=0.06
@@ -121,7 +123,7 @@ ensure_conda() {
 }
 
 run_stage1_phase1() {
-  log "Stage 1: 0 → ${MAX_STEPS_S1} (Eleventh: FAISS + ROI-ID + EMA + ROI schedule)"
+  log "Stage 1: 0 → ${MAX_STEPS_S1} (Fifteenth: FAISS + ROI-ID extended + EMA + ROI schedule)"
   PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
   COACH="$COACH" "$PYTHON_BIN" "$BASE_DIR/scripts/train.py" \
     --dataset_type ffhq_aging \
@@ -176,14 +178,14 @@ run_stage1_phase1() {
     --roi_id_lambda "$ROI_ID_LAMBDA" \
     $( [[ "$ROI_USE_EYES" == "1" ]] && echo "--roi_use_eyes" ) \
     $( [[ "$ROI_USE_MOUTH" == "1" ]] && echo "--roi_use_mouth" ) \
+    $( [[ "$ROI_USE_NOSE" == "1" ]] && echo "--roi_use_nose" ) \
+    $( [[ "$ROI_USE_BROWEYES" == "1" ]] && echo "--roi_use_broweyes" ) \
     --roi_size "$ROI_SIZE" \
     --roi_pad "$ROI_PAD" \
     --roi_jitter "$ROI_JITTER" \
     --roi_landmarks_model "$ROI_LANDMARKS_MODEL" \
     --roi_id_schedule_s1 "$ROI_S1_SCHEDULE" \
-    --geom_lambda 0.3 --geom_stage s1 --geom_parts eyes,nose,mouth --geom_weights 1.0,0.6,0.4 --geom_huber_delta 0.03 \
-    --age_anchor_path anchors/actor_w_age5.pt \
-    --age_anchor_lambda 0.02 --age_anchor_stage s1 --age_anchor_space w --age_anchor_bin_size 5 \
+    \
     --seed 123 \
     $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
     --ema_scope "$EMA_SCOPE" \
@@ -366,6 +368,8 @@ run_stage2() {
     --roi_id_lambda_s2 "$ROI_ID_LAMBDA_S2" \
     $( [[ "$ROI_USE_EYES" == "1" ]] && echo "--roi_use_eyes" ) \
     $( [[ "$ROI_USE_MOUTH" == "1" ]] && echo "--roi_use_mouth" ) \
+    $( [[ "$ROI_USE_NOSE" == "1" ]] && echo "--roi_use_nose" ) \
+    $( [[ "$ROI_USE_BROWEYES" == "1" ]] && echo "--roi_use_broweyes" ) \
     --roi_size "$ROI_SIZE" \
     --roi_pad "$ROI_PAD" \
     --roi_jitter "$ROI_JITTER" \

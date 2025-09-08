@@ -177,8 +177,10 @@ class Coach:
 		self.roi_jitter = float(getattr(self.opts, 'roi_jitter', 0.08) or 0.08)
 		self.roi_use_eyes = bool(getattr(self.opts, 'roi_use_eyes', False))
 		self.roi_use_mouth = bool(getattr(self.opts, 'roi_use_mouth', False))
+		self.roi_use_nose = bool(getattr(self.opts, 'roi_use_nose', False))
+		self.roi_use_broweyes = bool(getattr(self.opts, 'roi_use_broweyes', False))
 		self.roi_cropper = None
-		if self.roi_id_lambda > 0 and (self.roi_use_eyes or self.roi_use_mouth):
+		if self.roi_id_lambda > 0 and (self.roi_use_eyes or self.roi_use_mouth or self.roi_use_nose or self.roi_use_broweyes):
 			try:
 				from training.roi_crops import LandmarkCropper
 				self.roi_cropper = LandmarkCropper(getattr(self.opts, 'roi_landmarks_model', ''))
@@ -959,12 +961,14 @@ class Coach:
 				loss_dict['loss_contrastive_id'] = 0.0
 				loss_dict['mb_applied_ratio'] = 0.0
 			# ROI-ID micro-loss on real pass only — include in loss_dict for timestamp visibility
-			if (self.cur_roi_lambda > 0 or self.roi_id_lambda > 0) and (self.roi_cropper is not None) and (self.roi_use_eyes or self.roi_use_mouth):
+			if (self.cur_roi_lambda > 0 or self.roi_id_lambda > 0) and (self.roi_cropper is not None) and (self.roi_use_eyes or self.roi_use_mouth or self.roi_use_nose or self.roi_use_broweyes):
 				try:
 					roi_losses = []
 					roi_count = 0
 					roi_eyes = 0
 					roi_mouth = 0
+					roi_nose = 0
+					roi_broweyes = 0
 					landmark_failures = 0
 					x_src = x
 					x_gen = y_hat
@@ -983,16 +987,16 @@ class Coach:
 						gen = x_gen[b]
 						if pre_pts_src is not None and pre_pts_gen is not None:
 							crops_src = self.roi_cropper.rois_from_landmarks(src, pre_pts_src[b], self.roi_pad, self.roi_jitter, self.roi_size, train=True,
-																use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth)
+																use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth, use_nose=self.roi_use_nose, use_broweyes=self.roi_use_broweyes)
 							crops_gen = self.roi_cropper.rois_from_landmarks(gen, pre_pts_gen[b], self.roi_pad, self.roi_jitter, self.roi_size, train=True,
-																use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth)
+																use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth, use_nose=self.roi_use_nose, use_broweyes=self.roi_use_broweyes)
 							info_src = {'landmarks_used': True}
 							info_gen = {'landmarks_used': True}
 						else:
 							crops_src, info_src = self.roi_cropper.rois(src, self.roi_pad, self.roi_jitter, self.roi_size, train=True,
-																use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth, return_info=True)
+																use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth, use_nose=self.roi_use_nose, use_broweyes=self.roi_use_broweyes, return_info=True)
 							crops_gen, info_gen = self.roi_cropper.rois(gen, self.roi_pad, self.roi_jitter, self.roi_size, train=True,
-																use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth, return_info=True)
+																use_eyes=self.roi_use_eyes, use_mouth=self.roi_use_mouth, use_nose=self.roi_use_nose, use_broweyes=self.roi_use_broweyes, return_info=True)
 						if not (info_src.get('landmarks_used', False) and info_gen.get('landmarks_used', False)):
 							landmark_failures += 1
 						for key in list(crops_src.keys()):
@@ -1010,6 +1014,10 @@ class Coach:
 									roi_eyes += 1
 								elif key == 'mouth':
 									roi_mouth += 1
+								elif key == 'nose':
+									roi_nose += 1
+								elif key == 'broweyes':
+									roi_broweyes += 1
 						if len(roi_losses) > 0:
 							L_roi = torch.stack(roi_losses).mean()
 							# Use current scheduled lambda
@@ -1018,34 +1026,46 @@ class Coach:
 							self.logger.add_scalar("train/roi_pairs", int(roi_count), self.global_step)
 							self.logger.add_scalar("train/roi_pairs_eyes", int(roi_eyes), self.global_step)
 							self.logger.add_scalar("train/roi_pairs_mouth", int(roi_mouth), self.global_step)
+							self.logger.add_scalar("train/roi_pairs_nose", int(roi_nose), self.global_step)
+							self.logger.add_scalar("train/roi_pairs_broweyes", int(roi_broweyes), self.global_step)
 							self.logger.add_scalar("train/roi_landmark_failures", int(landmark_failures), self.global_step)
 							loss_dict['loss_roi_id'] = float(L_roi.item())
 							loss_dict['roi_pairs'] = int(roi_count)
 							loss_dict['roi_pairs_eyes'] = int(roi_eyes)
 							loss_dict['roi_pairs_mouth'] = int(roi_mouth)
+							loss_dict['roi_pairs_nose'] = int(roi_nose)
+							loss_dict['roi_pairs_broweyes'] = int(roi_broweyes)
 							loss_dict['roi_landmark_failures'] = int(landmark_failures)
 						else:
 							self.logger.add_scalar("train/loss_roi_id", 0.0, self.global_step)
 							self.logger.add_scalar("train/roi_pairs", 0, self.global_step)
 							self.logger.add_scalar("train/roi_pairs_eyes", 0, self.global_step)
 							self.logger.add_scalar("train/roi_pairs_mouth", 0, self.global_step)
+							self.logger.add_scalar("train/roi_pairs_nose", 0, self.global_step)
+							self.logger.add_scalar("train/roi_pairs_broweyes", 0, self.global_step)
 							self.logger.add_scalar("train/roi_landmark_failures", 0, self.global_step)
 							loss_dict['loss_roi_id'] = 0.0
 							loss_dict['roi_pairs'] = 0
 							loss_dict['roi_pairs_eyes'] = 0
 							loss_dict['roi_pairs_mouth'] = 0
+							loss_dict['roi_pairs_nose'] = 0
+							loss_dict['roi_pairs_broweyes'] = 0
 							loss_dict['roi_landmark_failures'] = 0
 				except Exception:
-					self.logger.add_scalar("train/loss_roi_id", 0.0, self.global_step)
-					self.logger.add_scalar("train/roi_pairs", 0, self.global_step)
-					self.logger.add_scalar("train/roi_pairs_eyes", 0, self.global_step)
-					self.logger.add_scalar("train/roi_pairs_mouth", 0, self.global_step)
-					self.logger.add_scalar("train/roi_landmark_failures", 0, self.global_step)
-					loss_dict['loss_roi_id'] = 0.0
-					loss_dict['roi_pairs'] = 0
-					loss_dict['roi_pairs_eyes'] = 0
-					loss_dict['roi_pairs_mouth'] = 0
-					loss_dict['roi_landmark_failures'] = 0
+						self.logger.add_scalar("train/loss_roi_id", 0.0, self.global_step)
+						self.logger.add_scalar("train/roi_pairs", 0, self.global_step)
+						self.logger.add_scalar("train/roi_pairs_eyes", 0, self.global_step)
+						self.logger.add_scalar("train/roi_pairs_mouth", 0, self.global_step)
+						self.logger.add_scalar("train/roi_pairs_nose", 0, self.global_step)
+						self.logger.add_scalar("train/roi_pairs_broweyes", 0, self.global_step)
+						self.logger.add_scalar("train/roi_landmark_failures", 0, self.global_step)
+						loss_dict['loss_roi_id'] = 0.0
+						loss_dict['roi_pairs'] = 0
+						loss_dict['roi_pairs_eyes'] = 0
+						loss_dict['roi_pairs_mouth'] = 0
+						loss_dict['roi_pairs_nose'] = 0
+						loss_dict['roi_pairs_broweyes'] = 0
+						loss_dict['roi_landmark_failures'] = 0
 				# Geometry loss (shape ratios) with stage gating and NaN guard
 				try:
 					if getattr(self, 'geom_enabled', False) and (getattr(self, 'geom_loss', None) is not None) and (getattr(self, 'geom_cropper', None) is not None):

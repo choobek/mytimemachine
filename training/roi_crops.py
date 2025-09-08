@@ -117,7 +117,8 @@ class LandmarkCropper:
         return torch.cat(out, dim=0)  # [B,68,2]
 
     def rois(self, img_chw: torch.Tensor, pad: float, jitter: float, roi_size: int, train: bool,
-             use_eyes: bool = True, use_mouth: bool = True, return_info: bool = False) -> Dict[str, torch.Tensor]:
+             use_eyes: bool = True, use_mouth: bool = True, use_nose: bool = False, use_broweyes: bool = False,
+             return_info: bool = False) -> Dict[str, torch.Tensor]:
         """
         Returns dict of crops {'eyes': [3,H,W], 'mouth': [3,H,W]} resized to roi_size.
         Works with aligned faces; falls back to heuristic boxes if landmarks unavailable.
@@ -146,6 +147,16 @@ class LandmarkCropper:
                 mx0, my0, mx1, my1 = _bbox_from_landmarks(pts[m_idx])
                 mx0, my0, mx1, my1 = _expand_pad_jitter(mx0, my0, mx1, my1, H, W, pad, jitter, train)
                 crops["mouth"] = _crop_resize(mx0, my0, mx1, my1)
+            if use_nose:
+                n_idx = list(range(27, 36))
+                nx0, ny0, nx1, ny1 = _bbox_from_landmarks(pts[n_idx])
+                nx0, ny0, nx1, ny1 = _expand_pad_jitter(nx0, ny0, nx1, ny1, H, W, pad, jitter, train)
+                crops["nose"] = _crop_resize(nx0, ny0, nx1, ny1)
+            if use_broweyes:
+                be_idx = list(range(17, 27)) + list(range(36, 48))
+                bx0, by0, bx1, by1 = _bbox_from_landmarks(pts[be_idx])
+                bx0, by0, bx1, by1 = _expand_pad_jitter(bx0, by0, bx1, by1, H, W, pad, jitter, train)
+                crops["broweyes"] = _crop_resize(bx0, by0, bx1, by1)
         else:
             # Heuristic fallback: boxes anchored to canonical aligned face regions (scaled by H/W)
             def _box_rel(x0: float, y0: float, x1: float, y1: float) -> torch.Tensor:
@@ -159,13 +170,18 @@ class LandmarkCropper:
                 crops["eyes"] = _box_rel(0.26, 0.30, 0.74, 0.53)
             if use_mouth:
                 crops["mouth"] = _box_rel(0.35, 0.60, 0.65, 0.86)
+            if use_nose:
+                crops["nose"] = _box_rel(0.40, 0.40, 0.60, 0.68)
+            if use_broweyes:
+                crops["broweyes"] = _box_rel(0.24, 0.22, 0.76, 0.53)
 
         if return_info:
             return crops, {"landmarks_used": landmarks_used}
         return crops
 
     def rois_from_landmarks(self, img_chw: torch.Tensor, pts: torch.Tensor, pad: float, jitter: float,
-                            roi_size: int, train: bool, use_eyes: bool = True, use_mouth: bool = True) -> Dict[str, torch.Tensor]:
+                            roi_size: int, train: bool, use_eyes: bool = True, use_mouth: bool = True,
+                            use_nose: bool = False, use_broweyes: bool = False) -> Dict[str, torch.Tensor]:
         """Crop ROIs using provided 68x2 landmarks; avoids running detector again."""
         H, W = int(img_chw.shape[1]), int(img_chw.shape[2])
         crops: Dict[str, torch.Tensor] = {}
@@ -186,6 +202,16 @@ class LandmarkCropper:
                 mx0, my0, mx1, my1 = _bbox_from_landmarks(pts[m_idx])
                 mx0, my0, mx1, my1 = _expand_pad_jitter(mx0, my0, mx1, my1, H, W, pad, jitter, train)
                 crops["mouth"] = _crop_resize(mx0, my0, mx1, my1)
+            if use_nose:
+                n_idx = list(range(27, 36))
+                nx0, ny0, nx1, ny1 = _bbox_from_landmarks(pts[n_idx])
+                nx0, ny0, nx1, ny1 = _expand_pad_jitter(nx0, ny0, nx1, ny1, H, W, pad, jitter, train)
+                crops["nose"] = _crop_resize(nx0, ny0, nx1, ny1)
+            if use_broweyes:
+                be_idx = list(range(17, 27)) + list(range(36, 48))
+                bx0, by0, bx1, by1 = _bbox_from_landmarks(pts[be_idx])
+                bx0, by0, bx1, by1 = _expand_pad_jitter(bx0, by0, bx1, by1, H, W, pad, jitter, train)
+                crops["broweyes"] = _crop_resize(bx0, by0, bx1, by1)
         return crops
 
 

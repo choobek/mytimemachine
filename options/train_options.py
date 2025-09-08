@@ -170,6 +170,10 @@ class TrainOptions:
                                  help='Include mouth ROI in ROI-ID (default off if flag absent).')
         self.parser.add_argument('--roi_use_eyes', action='store_true',
                                  help='Include eyes ROI in ROI-ID (default off if flag absent).')
+        self.parser.add_argument('--roi_use_nose', action='store_true',
+                                 help='Include nose ROI in ROI-ID (default off if flag absent).')
+        self.parser.add_argument('--roi_use_broweyes', action='store_true',
+                                 help='Include eyebrow+eye combined ROI in ROI-ID (default off if flag absent).')
         # ROI-ID schedule controls
         self.parser.add_argument('--roi_id_schedule_s1', type=str, default=None,
                                  help='Stage-1 schedule for ROI-ID lambda as "step:value,..." (e.g., "0:0.05,20000:0.07,36000:0.05").')
