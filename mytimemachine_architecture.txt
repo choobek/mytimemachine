@@ -6,6 +6,11 @@ MyTimeMachine architecture (current). An input face is encoded into StyleGAN’s
 - Personalized Adapter (blender; `models/blender.py`) to refine the SAM output with user-specific aging traits.
 - Generator (StyleGAN2; `models/stylegan2/`) to synthesize the 1024×1024 image.
 - Auxiliary networks: IR-SE50 (identity; `pretrained_models/model_ir_se50.pth`), DEX/VGG age classifier (`pretrained_models/dex_age_classifier.pth`).
+ - Optional identity/diagnostics additions from recent trainings:
+   - FAISS-based age-aware impostor mining for contrastive ID with semi-hard negatives (`training/impostor_faiss.py`).
+   - ROI-ID over eyes and mouth guided by Dlib landmarks (see `training/roi_crops.py`).
+   - Geometry ratios loss using 68 facial landmarks (eyes, nose, mouth) to penalize shape drift.
+   - Age-conditional actor anchors in W-space (5-year bins) to gently reduce latent drift toward a specific actor around target ages.
 
 2) Data and preprocessing
 Faces are enhanced (GFPGAN/Real-ESRGAN as available), filtered, and aligned via Dlib 68-landmark predictor (`pretrained_models/shape_predictor_68_face_landmarks.dat`). Datasets are organized by age (e.g., `{age}_{idx}.jpg`). PyTorch datasets (`datasets/*`) load images and apply normalization/augmentations. Training uses uniform-random target ages unless otherwise specified.
@@ -25,6 +30,8 @@ Additionally: EMA on decoder weights is enabled for evaluation/checkpointing (`-
 - Nearest‑Neighbor ID (NN‑ID): interpolation-only regularizer that pulls toward nearest same‑identity exemplars in the training set embedding space; `--nearest_neighbor_id_loss_lambda` (e.g., 0.05–0.2 depending on stage).
 - Age‑aware Contrastive ID (impostor bank): repels from different‑identity embeddings drawn from an age‑binned FFHQ bank within an application window; `--contrastive_id_lambda` (e.g., 0.02–0.04). Age window and temperature are configurable.
 - ROI‑ID (eyes + mouth): identity preservation on discriminative regions. ROIs are extracted via Dlib landmarks; loss computed on cropped/jittered regions; `--roi_id_lambda` with `--roi_use_eyes`/`--roi_use_mouth`.
+ - Geometry ratios loss (Stage‑1 only): penalizes deviations in stable facial shape ratios using Dlib 68 landmarks. Parts typically used: eyes, nose, mouth with weights (e.g., 1.0, 0.6, 0.4). Uses a Huber penalty (e.g., `--geom_huber_delta≈0.03`) normalized by inter‑ocular distance; enabled via `--geom_lambda` with `--geom_stage s1`.
+ - Age‑conditional actor anchors (Stage‑1 only): a tiny anchor loss in W/W+ nudging latents toward precomputed actor-specific anchors binned by age (e.g., 5‑year bins around 39–40). Enabled with `--age_anchor_path anchors/actor_w_age5.pt`, `--age_anchor_lambda≈0.02`, `--age_anchor_stage s1`, `--age_anchor_space w`, `--age_anchor_bin_size 5`.
 
 5) Impostor bank and mining (age-aware, FAISS optional)
 - Bank: IR-SE50 embeddings of FFHQ faces binned by 5-year ages; path `banks/ffhq_ir50_age_5y.pt`.
@@ -33,6 +40,7 @@ Additionally: EMA on decoder weights is enabled for evaluation/checkpointing (`-
 - FAISS semi‑hard mining (optional): enable `--mb_use_faiss` to retrieve top-M candidates (`--mb_top_m`) and filter by similarity band (`--mb_min_sim`, `--mb_max_sim`) before sampling K negatives. This focuses on semi-hard impostors to improve identity discrimination without over‑canonicalization.
 Implementation pointers: `training/impostor_bank.py` (bank access), `training/impostor_faiss.py` (mining), `tools/build_agebank.py` (bank utilities).
 Twelfth training (soft miner) recommended profile: enable FAISS with a softer band and larger pre‑pool, e.g., `mb_k≈48`, `mb_top_m≈768`, band `[0.25, 0.60]`, `mb_temperature≈0.12`, age window `[35,45]`. Miner diagnostics (candidate_count after banding, similarity mean/std and percentiles, k_effective, band_min/max) are logged to TensorBoard and appended to `experiments/**/checkpoints/timestamp.txt` at validation.
+ Recent stable profiles also include a mid‑boost ROI‑ID schedule in Stage‑1 and decoder‑EMA for evaluation, coexisting with the FAISS soft miner without instability.
 
 6) ROI‑ID details (eyes + mouth)
 ROIs are derived from 68-point Dlib landmarks. Typical settings: `--roi_size 112`, `--roi_pad 0.35`, `--roi_jitter 0.06` with eyes and mouth enabled. This loss emphasizes micro-identity (eye shape, inter‑ocular geometry, mouth corners/asymmetry) and complements global ID. Implementation: `training/roi_crops.py`.
@@ -47,4 +55,10 @@ EMA and ROI‑ID defaults: enable decoder EMA for eval/checkpoints (`--ema`, dec
 Training is driven by `scripts/train.py` with flags shown above. Two-stage automation is available in `scripts/train_two_stage.sh` (Stage 1 → auto‑resume Stage 2). Validation is deterministic with small caps for speed (`--val_interval`, `--val_deterministic`, `--val_max_batches`, optional `--val_disable_aging`). All experiments write under `experiments/full_training_run/**` with checkpoints and TensorBoard logs.
 
 9) Summary
-The current system augments the original SAM+Adapter+StyleGAN pipeline with identity‑focused additions: (a) NN‑ID on interpolation to pull toward the correct identity manifold, (b) an age‑aware contrastive objective against an FFHQ impostor bank with FAISS mining (including a soft‑band option and miner diagnostics), (c) ROI‑ID over eyes and mouth guided by landmarks with a Stage‑1 mid‑boost schedule, and (d) EMA‑based decoder evaluation for stable checkpoints. Combined with adaptive W‑norm and balanced perceptual/pixel losses, these upgrades improve personalization and micro‑identity fidelity while maintaining stable, artifact‑free aging edits; compact metrics (including miner diagnostics) are logged to TensorBoard and `checkpoints/timestamp.txt`, with full configs in `opt.json` for reproducibility.
+The current system augments the original SAM+Adapter+StyleGAN pipeline with identity‑focused additions: (a) NN‑ID on interpolation to pull toward the correct identity manifold, (b) an age‑aware contrastive objective against an FFHQ impostor bank with FAISS mining (including a soft‑band option and miner diagnostics), (c) ROI‑ID over eyes and mouth guided by landmarks with a Stage‑1 mid‑boost schedule, (d) EMA‑based decoder evaluation for stable checkpoints, (e) a Stage‑1‑only geometry ratios loss to limit facial shape drift, and (f) a tiny Stage‑1 age‑anchor loss in W‑space to gently guide latents toward actor‑specific age bins. Combined with adaptive W‑norm and balanced perceptual/pixel losses, these upgrades improve personalization and micro‑identity fidelity while maintaining stable, artifact‑free aging edits; compact metrics (including miner diagnostics, ROI‑ID lambda schedule, and anchor breadcrumbs) are logged to TensorBoard and `checkpoints/timestamp.txt`, with full configs in `opt.json` for reproducibility.
+
+10) Diagnostics and monitoring (recent additions)
+- Miner diagnostics: FAISS miner logs candidate_count after banding, similarity mean/std and p50/p75/p90, k_effective, and the active band. These appear in TensorBoard and are appended as compact `mb:` lines in `experiments/**/checkpoints/timestamp.txt` at validation.
+- ROI‑ID schedule breadcrumbs: current ROI‑ID λ is tracked during Stage‑1 (e.g., 0.05→0.07→0.05), aiding quick checks without opening TensorBoard.
+- EMA markers: validation/eval indicates whether EMA was used (`used_ema=1`) and EMA buffers persist across resumes when `--ema --eval_with_ema` are set.
+- Anchor breadcrumbs: Stage‑1 logs include anchor configuration (bin count/size, space, λ) and a small `loss_anchor` scalar when age anchors are enabled.
