@@ -46,6 +46,26 @@ class Coach:
 		if self.opts.aging_lambda > 0:
 			self.aging_loss = AgingLoss(self.opts)
 
+		# Target-age ID guidance (Task 3)
+		self.target_id_bank = None
+		self.target_id_apply_min_age = int(getattr(self.opts, 'target_id_apply_min_age', 38) or 38)
+		self.target_id_apply_max_age = int(getattr(self.opts, 'target_id_apply_max_age', 42) or 42)
+		self.target_id_lambda_s1 = float(getattr(self.opts, 'target_id_lambda_s1', 0.10) or 0.10)
+		self.target_id_lambda_s2 = float(getattr(self.opts, 'target_id_lambda_s2', 0.05) or 0.05)
+		bank_path = str(getattr(self.opts, 'target_id_bank_path', '') or '')
+		if len(bank_path) > 0 and os.path.exists(bank_path):
+			try:
+				bank_obj = torch.load(bank_path, map_location='cpu')
+				protos = bank_obj.get('global_protos', None)
+				if isinstance(protos, dict) and len(protos) > 0:
+					# Move to device as a simple dict of tensors
+					self.target_id_bank = {int(k): v.to(self.device).float() for k, v in protos.items()}
+					print(f"[target-id] Loaded {len(self.target_id_bank)} age prototypes from {bank_path}")
+				else:
+					print(f"[target-id] No global_protos found in {bank_path}; feature OFF")
+			except Exception as e:
+				print(f"[target-id] Failed to load target-id bank: {e}; feature OFF")
+
 		# Initialize optimizer
 		self.optimizer = self.configure_optimizers()
 
@@ -535,6 +555,61 @@ class Coach:
 			aging_loss, id_logs = self.aging_loss(y_hat, y, target_ages, id_logs, label=data_type)
 			loss_dict[f'loss_aging_{data_type}'] = float(aging_loss)
 			loss += aging_loss * effective_aging_lambda
+		# Target-age ID guidance (Task 3): apply only on real pass and only for target ages in [min,max]
+		try:
+			if (data_type == 'real') and (self.target_id_bank is not None):
+				# Determine stage and pick lambda
+				stage1 = bool(getattr(self.opts, 'train_encoder', False))
+				stage2 = bool(getattr(self.opts, 'train_decoder', False)) and not stage1
+				lam = 0.0
+				if stage1:
+					lam = float(self.target_id_lambda_s1)
+				elif stage2:
+					lam = float(self.target_id_lambda_s2)
+				# Active mask based on integer-rounded years
+				years = torch.clamp((target_ages * 100.0).round().to(torch.int64), 0, 200)
+				mask = (years >= int(self.target_id_apply_min_age)) & (years <= int(self.target_id_apply_max_age))
+				applied_ratio = float(mask.float().mean().item()) if mask.numel() > 0 else 0.0
+				self.logger.add_scalar(f"train/target_id_applied_ratio_{data_type}", applied_ratio, self.global_step)
+				loss_dict[f'target_id_applied_ratio_{data_type}'] = applied_ratio
+				L_tid = torch.tensor(0.0, device=y_hat.device)
+				if lam > 0.0 and mask.any():
+					# Ensure ID encoder present
+					if not hasattr(self, 'id_loss'):
+						self.id_loss = id_loss.IDLoss().to(self.device).eval()
+					# Compute output features for active subset
+					feat = self.id_loss.extract_feats(y_hat[mask])  # [B',512]
+					feat = F.normalize(feat, dim=1)
+					ages_act = years[mask].tolist()
+					protos = []
+					for a in ages_act:
+						# nearest available prototype by absolute difference
+						if len(self.target_id_bank) == 0:
+							proto = None
+						else:
+							closest = min(self.target_id_bank.keys(), key=lambda k: abs(int(k) - int(a)))
+							proto = self.target_id_bank.get(int(closest), None)
+						if proto is None:
+							proto = torch.zeros(512, device=y_hat.device)
+						protos.append(proto.unsqueeze(0))
+					if len(protos) > 0:
+						P = torch.cat(protos, dim=0)  # [B',512]
+						P = F.normalize(P, dim=1)
+						cos = torch.sum(feat * P, dim=1)
+						L_tid = (1.0 - cos).mean()
+						loss = loss + lam * L_tid
+						self.logger.add_scalar(f"train/loss_target_id_{data_type}", float(L_tid.item()), self.global_step)
+						loss_dict[f'loss_target_id_{data_type}'] = float(L_tid.item())
+					else:
+						self.logger.add_scalar(f"train/loss_target_id_{data_type}", 0.0, self.global_step)
+						loss_dict[f'loss_target_id_{data_type}'] = 0.0
+				else:
+					self.logger.add_scalar(f"train/loss_target_id_{data_type}", 0.0, self.global_step)
+					loss_dict[f'loss_target_id_{data_type}'] = 0.0
+		except Exception:
+			self.logger.add_scalar(f"train/loss_target_id_{data_type}", 0.0, self.global_step)
+			loss_dict[f'loss_target_id_{data_type}'] = 0.0
+			loss_dict[f'target_id_applied_ratio_{data_type}'] = 0.0
 		loss_dict[f'loss_{data_type}'] = float(loss)
 		if data_type == "cycle":
 			loss = loss * self.opts.cycle_lambda

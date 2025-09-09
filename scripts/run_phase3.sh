@@ -7,7 +7,7 @@ EXP_DIR="experiments/phase3_oneshot_40"
 TRAIN_DS="data/shot_train"
 TEST_DS="data/shot_test"
 
-BASE_CKPT="experiments/full_training_run/00063/checkpoints/best_model.pt"
+BASE_CKPT="experiments/full_training_run/00070/checkpoints/best_model.pt"
 
 # Make sure conda env is active outside or add boilerplate:
 # Activate conda env only if not already active
@@ -41,7 +41,7 @@ PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
   --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
   --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
   --mb_apply_min_age 38 --mb_apply_max_age 42 --mb_temperature 0.12 \
-  --roi_id_lambda_s2 0.05 --roi_use_eyes --roi_use_mouth --roi_use_nose --roi_use_broweyes \
+  --roi_id_lambda_s2 0.05 --roi_use_eyes --roi_use_mouth \
   --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
   --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
   --extrapolation_start_step 1000000000 \

@@ -64,8 +64,8 @@ MB_MAX_SIM=0.60
 ROI_ID_LAMBDA=0.05
 ROI_USE_EYES=1
 ROI_USE_MOUTH=1
-ROI_USE_NOSE=1
-ROI_USE_BROWEYES=1
+ROI_USE_NOSE=0
+ROI_USE_BROWEYES=0
 ROI_SIZE=112
 ROI_PAD=0.35
 ROI_JITTER=0.06
@@ -80,6 +80,20 @@ EVAL_WITH_EMA=1
 # ROI schedule controls (S1 schedule; S2 fixed)
 ROI_S1_SCHEDULE="0:0.05,20000:0.07,36000:0.05"
 ROI_ID_LAMBDA_S2=0.05
+
+# Age anchors (Sixteenth: 1-year bins, S1-only)
+AGE_ANCHOR_PATH="anchors/actor_w_age1.pt"
+AGE_ANCHOR_LAMBDA=0.03
+AGE_ANCHOR_STAGE="s1"
+AGE_ANCHOR_SPACE="w"
+AGE_ANCHOR_BIN_SIZE=1
+
+# Target-age ID guidance (apply around 38–42)
+TARGET_ID_BANK_PATH="banks/actor40_ir.pt"
+TARGET_ID_LAMBDA_S1=0.10
+TARGET_ID_LAMBDA_S2=0.05
+TARGET_ID_APPLY_MIN_AGE=38
+TARGET_ID_APPLY_MAX_AGE=42
 
 # Stage 2 hparams (Ninth training plan)
 ID_LAMBDA_S2=0.3
@@ -185,6 +199,15 @@ run_stage1_phase1() {
     --roi_jitter "$ROI_JITTER" \
     --roi_landmarks_model "$ROI_LANDMARKS_MODEL" \
     --roi_id_schedule_s1 "$ROI_S1_SCHEDULE" \
+    --age_anchor_path "$AGE_ANCHOR_PATH" \
+    --age_anchor_lambda "$AGE_ANCHOR_LAMBDA" \
+    --age_anchor_stage "$AGE_ANCHOR_STAGE" \
+    --age_anchor_space "$AGE_ANCHOR_SPACE" \
+    --age_anchor_bin_size "$AGE_ANCHOR_BIN_SIZE" \
+    --target_id_bank_path "$TARGET_ID_BANK_PATH" \
+    --target_id_lambda_s1 "$TARGET_ID_LAMBDA_S1" \
+    --target_id_apply_min_age "$TARGET_ID_APPLY_MIN_AGE" \
+    --target_id_apply_max_age "$TARGET_ID_APPLY_MAX_AGE" \
     \
     --seed 123 \
     $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
@@ -374,6 +397,10 @@ run_stage2() {
     --roi_pad "$ROI_PAD" \
     --roi_jitter "$ROI_JITTER" \
     --roi_landmarks_model "$ROI_LANDMARKS_MODEL" \
+    --target_id_bank_path "$TARGET_ID_BANK_PATH" \
+    --target_id_lambda_s2 "$TARGET_ID_LAMBDA_S2" \
+    --target_id_apply_min_age "$TARGET_ID_APPLY_MIN_AGE" \
+    --target_id_apply_max_age "$TARGET_ID_APPLY_MAX_AGE" \
     $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
     --ema_scope "$EMA_SCOPE" \
     --ema_decay "$EMA_DECAY" \

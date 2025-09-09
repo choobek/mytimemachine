@@ -167,9 +167,9 @@ class TrainOptions:
         self.parser.add_argument('--roi_size', type=int, default=112,
                                  help='Crop size (pixels) for IR-SE50.')
         self.parser.add_argument('--roi_pad', type=float, default=0.35,
-                                 help='Padding ratio around tight eye/mouth boxes (e.g., 0.35 = +35%).')
+                                 help='Padding ratio around tight eye/mouth boxes (e.g., 0.35 = +35%%).')
         self.parser.add_argument('--roi_jitter', type=float, default=0.08,
-                                 help='Uniform jitter fraction for box center/size during train (0.08 = ±8%).')
+                                 help='Uniform jitter fraction for box center/size during train (0.08 = ±8%%).')
         self.parser.add_argument('--roi_landmarks_model', type=str, default="",
                                  help='Optional path to Dlib 68-landmark model. Empty = try autodetect or heuristic fallback.')
         self.parser.add_argument('--roi_use_mouth', action='store_true',
@@ -211,6 +211,17 @@ class TrainOptions:
                                  help='Anchor bin size in years; used for sanity checks (default 5).')
         self.parser.add_argument('--age_anchor_space', type=str, default='w', choices=['w', 'wplus'],
                                  help='Anchor space (w or wplus). Default w.')
+        # Target-age ID guidance (Task 3)
+        self.parser.add_argument('--target_id_bank_path', type=str, default='banks/actor40_ir.pt',
+                                 help='Path to target-ID bank with global_protos dict {age:int -> 512-D tensor}.')
+        self.parser.add_argument('--target_id_lambda_s1', type=float, default=0.10,
+                                 help='Stage-1 lambda for target-ID guidance.')
+        self.parser.add_argument('--target_id_lambda_s2', type=float, default=0.05,
+                                 help='Stage-2 lambda for target-ID guidance.')
+        self.parser.add_argument('--target_id_apply_min_age', type=int, default=38,
+                                 help='Minimum target age (inclusive) to apply target-ID guidance.')
+        self.parser.add_argument('--target_id_apply_max_age', type=int, default=42,
+                                 help='Maximum target age (inclusive) to apply target-ID guidance.')
         # curriculum for extrapolation
         self.parser.add_argument('--extrapolation_start_step', default=3000, type=int,
                                  help='Training step to allow any extrapolation')

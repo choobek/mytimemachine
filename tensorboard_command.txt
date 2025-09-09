@@ -1,1 +1,1 @@
-bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && tensorboard --logdir /home/wczub/RND/AI_DEAGING/repos/mytimemachine/experiments/full_training_run --port 6006 --host 0.0.0.0"
+bash -lc "conda run -n tbboard tensorboard --logdir /home/wczub/RND/AI_DEAGING/repos/mytimemachine/experiments/full_training_run --port 6007 --host 0.0.0.0 | cat"

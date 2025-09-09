@@ -54,6 +54,25 @@ class Coach:
 		if not hasattr(self, 'aging_loss'):
 			self.aging_loss = AgingLoss(self.opts)
 
+		# Target-age ID guidance (Task 3)
+		self.target_id_bank = None
+		self.target_id_apply_min_age = int(getattr(self.opts, 'target_id_apply_min_age', 38) or 38)
+		self.target_id_apply_max_age = int(getattr(self.opts, 'target_id_apply_max_age', 42) or 42)
+		self.target_id_lambda_s1 = float(getattr(self.opts, 'target_id_lambda_s1', 0.10) or 0.10)
+		self.target_id_lambda_s2 = float(getattr(self.opts, 'target_id_lambda_s2', 0.05) or 0.05)
+		bank_path = str(getattr(self.opts, 'target_id_bank_path', '') or '')
+		if len(bank_path) > 0 and os.path.exists(bank_path):
+			try:
+				bank_obj = torch.load(bank_path, map_location='cpu')
+				protos = bank_obj.get('global_protos', None)
+				if isinstance(protos, dict) and len(protos) > 0:
+					self.target_id_bank = {int(k): v.to(self.device).float() for k, v in protos.items()}
+					print(f"[target-id] Loaded {len(self.target_id_bank)} age prototypes from {bank_path}")
+				else:
+					print(f"[target-id] No global_protos found in {bank_path}; feature OFF")
+			except Exception as e:
+				print(f"[target-id] Failed to load target-id bank: {e}; feature OFF")
+
 		# Initialize optimizer
 		self.optimizer = self.configure_optimizers()
 
@@ -99,12 +118,38 @@ class Coach:
 				if space != self.anchor_space:
 					print(f"[anchor] Space mismatch: file space={space} vs flag={self.anchor_space}. Disabling.")
 				else:
-					file_bin = int(anchors_obj.get('bin_size', self.anchor_bin_size))
+					# Support both legacy tensor format and new dict{age:int -> Tensor}
+					file_bin = anchors_obj.get('bin_size', None)
+					if file_bin is None:
+						# Try nested range.bin_size
+						try:
+							file_bin = int(anchors_obj.get('range', {}).get('bin_size', self.anchor_bin_size))
+						except Exception:
+							file_bin = self.anchor_bin_size
+					else:
+						file_bin = int(file_bin)
 					if file_bin != self.anchor_bin_size:
 						print(f"[anchor] Bin size mismatch: file {file_bin} vs flag {self.anchor_bin_size}. Using file value.")
 						self.anchor_bin_size = file_bin
 					anchors_w = anchors_obj.get('anchors', None)
 					bin_mids = anchors_obj.get('bin_mids', [])
+					# If saved as dict {age:int -> tensor}, convert to stacked tensor + sorted mids
+					if isinstance(anchors_w, dict) and len(anchors_w) > 0:
+						ages_sorted = sorted(int(a) for a in anchors_w.keys())
+						stack_list = []
+						for a in ages_sorted:
+							v = anchors_w[int(a)]
+							if isinstance(v, torch.Tensor):
+								# Support W+ tensors by averaging over styles
+								if v.ndim == 2 and v.size(1) == 512:
+									w = v.mean(dim=0)
+								elif v.ndim == 1 and v.numel() == 512:
+									w = v
+								else:
+									continue
+								stack_list.append(w.float().unsqueeze(0))
+						anchors_w = torch.cat(stack_list, dim=0) if len(stack_list) > 0 else None
+						bin_mids = ages_sorted
 					if isinstance(anchors_w, torch.Tensor) and anchors_w.ndim == 2 and anchors_w.size(1) == 512 and len(bin_mids) == anchors_w.size(0):
 						self.anchor_loss = AgeAnchorLoss(anchors_w.to(self.device), bin_mids=bin_mids, bin_size=self.anchor_bin_size)
 						self.anchor_bins_count = int(anchors_w.size(0))
@@ -117,7 +162,7 @@ class Coach:
 						except Exception:
 							pass
 					else:
-						print("[anchor] Invalid anchors tensor or bin_mids; disabling.")
+						print("[anchor] Invalid anchors content; disabling.")
 			except Exception as e:
 				print(f"[anchor] Could not load anchors from {anchor_path}: {e}. Feature OFF.")
 		else:
@@ -929,6 +974,59 @@ class Coach:
 			aging_loss, id_logs = self.aging_loss(y_hat, y, target_ages, id_logs, label=data_type)
 			loss_dict[f'loss_aging_{data_type}'] = float(aging_loss)
 			loss += aging_loss * effective_aging_lambda
+		# Target-age ID guidance (Task 3): apply only on real pass and only for target ages in [min,max]
+		try:
+			if (data_type == 'real') and (self.target_id_bank is not None):
+				# Determine stage and pick lambda
+				stage1 = bool(getattr(self.opts, 'train_encoder', False))
+				stage2 = bool(getattr(self.opts, 'train_decoder', False)) and not stage1
+				lam = 0.0
+				if stage1:
+					lam = float(self.target_id_lambda_s1)
+				elif stage2:
+					lam = float(self.target_id_lambda_s2)
+				# Active mask based on integer-rounded years
+				years = torch.clamp((target_ages * 100.0).round().to(torch.int64), 0, 200)
+				mask = (years >= int(self.target_id_apply_min_age)) & (years <= int(self.target_id_apply_max_age))
+				applied_ratio = float(mask.float().mean().item()) if mask.numel() > 0 else 0.0
+				self.logger.add_scalar(f"train/target_id_applied_ratio_{data_type}", applied_ratio, self.global_step)
+				loss_dict[f'target_id_applied_ratio_{data_type}'] = applied_ratio
+				L_tid = torch.tensor(0.0, device=y_hat.device)
+				if lam > 0.0 and mask.any():
+					# Ensure ID encoder present
+					if not hasattr(self, 'id_loss'):
+						self.id_loss = id_loss.IDLoss().to(self.device).eval()
+					feat = self.id_loss.extract_feats(y_hat[mask])  # [B',512]
+					feat = F.normalize(feat, dim=1)
+					ages_act = years[mask].tolist()
+					protos = []
+					for a in ages_act:
+						if len(self.target_id_bank) == 0:
+							proto = None
+						else:
+							closest = min(self.target_id_bank.keys(), key=lambda k: abs(int(k) - int(a)))
+							proto = self.target_id_bank.get(int(closest), None)
+						if proto is None:
+							proto = torch.zeros(512, device=y_hat.device)
+						protos.append(proto.unsqueeze(0))
+					if len(protos) > 0:
+						P = torch.cat(protos, dim=0)
+						P = F.normalize(P, dim=1)
+						cos = torch.sum(feat * P, dim=1)
+						L_tid = (1.0 - cos).mean()
+						loss = loss + lam * L_tid
+						self.logger.add_scalar(f"train/loss_target_id_{data_type}", float(L_tid.item()), self.global_step)
+						loss_dict[f'loss_target_id_{data_type}'] = float(L_tid.item())
+					else:
+						self.logger.add_scalar(f"train/loss_target_id_{data_type}", 0.0, self.global_step)
+						loss_dict[f'loss_target_id_{data_type}'] = 0.0
+				else:
+					self.logger.add_scalar(f"train/loss_target_id_{data_type}", 0.0, self.global_step)
+					loss_dict[f'loss_target_id_{data_type}'] = 0.0
+		except Exception:
+			self.logger.add_scalar(f"train/loss_target_id_{data_type}", 0.0, self.global_step)
+			loss_dict[f'loss_target_id_{data_type}'] = 0.0
+			loss_dict[f'target_id_applied_ratio_{data_type}'] = 0.0
 		# Age-anchor loss (Task 4) — apply only on real pass, gated by stage and flags
 		try:
 			if (data_type == "real") and self.anchor_enabled and (self.anchor_lambda > 0.0):

@@ -851,7 +851,7 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
   --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
   --extrapolation_start_step 1000000000 \
   --roi_id_lambda 0.05 \
-  --roi_id_schedule_s1 "0:0.05,20000:0.07,36000:0.05" \
+  --roi_id_schedule_s1 \"0:0.05,20000:0.07,36000:0.05\" \
   --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
   --val_deterministic --val_max_batches 2 --val_interval 500 \
   --warmup_steps 500 --min_lr 5e-7 \
@@ -1050,7 +1050,7 @@ Monitoring & acceptance (fast checks):
 
 Fourteenth training (2-staged) — Age-conditional Actor Anchors (S1-only)
 -------------------------------------
-Goal: Reduce latent drift and batch bias for de‑aging a 73‑year‑old actor toward 39–40 by adding a small age‑anchor loss in Stage‑1 only. Anchors are computed offline from the actor’s own images in W space (bin size 5y). Stage‑2 focuses on sharpening without anchors.
+Goal: Reduce latent drift and batch bias for de‑aging a 73‑year‑old actor toward 39–40 by adding a small age‑anchor loss in Stage‑1 only. Anchors are computed offline from the actor's own images in W space (bin size 5y). Stage‑2 focuses on sharpening without anchors.
 
 Key settings (Stage 1 → Stage 2):
 - Coach: orig_nn; interpolation‑only (extrapolation disabled)
@@ -1174,7 +1174,7 @@ Comparisons vs previous trainings
   - S2 best improved (≈0.804 vs Eleventh ≈0.807–0.809); identity/perceptual heads in similar ranges; EMA behavior identical
   - S1 convergence was earlier: best at 25.5k (this run) vs late windows in Eleventh; w‑norm progressed to ≈38 by 25.5k, indicating reduced drift sooner
 - vs Twelfth (soft‑0.60 miner + diagnostics; no anchors):
-  - Twelfth S2 best ≈0.8006 (slightly lower absolute total); this run’s S2 ≈0.804 is on‑par
+  - Twelfth S2 best ≈0.8006 (slightly lower absolute total); this run's S2 ≈0.804 is on‑par
   - Notable gain: earlier S1 sweet‑spot (best 25.5k vs Twelfth 32k), suggesting anchors stabilized W closer to actor bins and reduced exploration overhead
 - vs Tenth (FAISS + ROI‑ID; no anchors):
   - Totals on par; w‑norm in our S1/S2 sat ≈37–38, matching or edging prior runs while reaching best windows earlier
@@ -1332,5 +1332,84 @@ Recommendations
 
 Artifacts present (useful breadcrumbs)
 - `miner_profile.txt`: custom
-- `timestamp.txt`: frequent “mb:” diagnostics with k_effective=64; roi_pairs_* show all four regions active; `used_ema=1` markers present in both stages.
+- `timestamp.txt`: frequent "mb:" diagnostics with k_effective=64; roi_pairs_* show all four regions active; `used_ema=1` markers present in both stages.
+
+
+-------------------------------------
+Sixteenth Full Training (2-staged) — Target-ID @40 + 1-year Actor Anchors (S1-only)
+-------------------------------------
+Goal: add a small target-age identity guidance toward real 40-year-old prototypes, and switch actor anchors to 1-year bins with a slightly higher weight, applied only in Stage 1. Keep the stable stack from Eleventh/Twelfth/Fourteenth: EMA eval, FAISS soft miner, ROI-ID schedule, extrapolation disabled; geometry OFF.
+
+What's new vs Fourteenth:
+- Target-ID guidance (IR-SE50): pulls outputs near 38–42 toward the nearest global prototype from `banks/actor40_ir.pt`, stage-aware λ (S1 higher, S2 lower).
+- Denser actor anchors: use `anchors/actor_w_age1.pt` (1-year bins) with λ=0.03; S1 only.
+- Keep FAISS soft miner, ROI-ID schedule, NN-ID, contrastive impostor, EMA eval.
+
+Stage 1 — 0→40k (encoder+decoder; anchors ON; stronger target-ID)
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_encoder \
+  --batch_size 2 --workers 2 \
+  --target_age uniform_random \
+  --max_steps 40000 \
+  --id_lambda 0.3 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --nearest_neighbor_id_loss_lambda 0.10 \
+  --contrastive_id_lambda 0.04 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --extrapolation_start_step 1000000000 \
+  --roi_use_eyes --roi_use_mouth --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --roi_id_lambda 0.05 \
+  --roi_id_schedule_s1 \"0:0.05,20000:0.07,36000:0.05\" \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --age_anchor_path anchors/actor_w_age1.pt \
+  --age_anchor_lambda 0.03 --age_anchor_stage s1 --age_anchor_space w --age_anchor_bin_size 1 \
+  --target_id_bank_path banks/actor40_ir.pt \
+  --target_id_lambda_s1 0.10 --target_id_apply_min_age 38 --target_id_apply_max_age 42 \
+  --val_interval 500 --val_deterministic --val_max_batches 2 --val_start_step 2000 \
+  --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard | cat"
+```
+
+Stage 2 — 40k→55k (decoder-only; anchors OFF; target-ID weaker)
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_decoder \
+  --batch_size 2 --workers 2 --test_batch_size 2 --test_workers 2 \
+  --target_age uniform_random \
+  --max_steps 55000 --learning_rate 3e-5 \
+  --id_lambda 0.3 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 \
+  --aging_lambda 5 --aging_lambda_decoder_scale 0.5 \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --nearest_neighbor_id_loss_lambda 0.05 \
+  --contrastive_id_lambda 0.02 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --roi_use_eyes --roi_use_mouth --roi_id_lambda_s2 0.05 --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --target_id_bank_path banks/actor40_ir.pt \
+  --target_id_lambda_s2 0.05 --target_id_apply_min_age 38 --target_id_apply_max_age 42 \
+  --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_40000.pt \
+  --val_interval 500 --val_deterministic --val_max_batches 2 --warmup_steps 500 --min_lr 5e-7 --nan_guard | cat"
+```
+
+Notes:
+- Anchors: dict format {age:int → tensor} supported; W+ averaged to W internally.
+- Target-ID: uses IR-SE50 embeddings; only active for targets in [38,42]; stage-aware λ.
+- Keep extrapolation disabled; stop S2 early if plateau around 45–50k.
 

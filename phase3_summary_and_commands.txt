@@ -59,3 +59,88 @@ python scripts/inference_unified.py \
 Notes
 - Acceptance criteria: age lock [38,42] upheld; periodic plateau messages logged; identity trend non-increasing over rolling windows.
 - For small additional gains: extend +3k–5k steps at LR 1e-6; optionally set ROI-ID S2 λ=0.06–0.07 and mb temperature τ=0.10.
+
+Entry 002 — One-shot 40±2 from Fifteenth Training S2 best (experiments/phase3_oneshot_40/00006)
+- Exp dir: experiments/phase3_oneshot_40/00006
+- Base checkpoint: experiments/full_training_run/00070/checkpoints/best_model.pt
+- Fixed target age: 40 ± 2
+- Miner window: [38,42]; FAISS soft band: k=48, top_m=768, sim∈[0.25,0.60], τ=0.12
+- Safety rails: extrapolation disabled; EMA eval on decoder (decay=0.999); deterministic val (max 2 batches)
+- ROI-ID (S2): λ=0.05, eyes+mouth (nose/broweyes disabled to align with best totals)
+- Datasets: train=data/shot_train, test=data/shot_test
+- Improvements vs Entry 001:
+  - Resume from newer S2 best (00070) instead of 00063
+  - Slightly stronger ROI-ID in S2: λ=0.05; keep eyes+mouth only for lower totals
+  - Use FAISS soft-0.60 miner profile (k=48, top_m=768, sim∈[0.25,0.60])
+  - Keep EMA evaluation and deterministic val
+- Acceptance criteria: age lock [38,42]; roi_pairs_eyes/mouth > 0; identity non-degrading trend; best window by ~8–12k with plateau notes
+
+Reproduce training (one-shot Phase-3)
+python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging \
+  --train_dataset data/shot_train \
+  --test_dataset data/shot_test \
+  --exp_dir experiments/phase3_oneshot_40 \
+  --start_from_encoded_w_plus --train_decoder \
+  --batch_size 2 --workers 2 \
+  --max_steps 10000 \
+  --learning_rate 1.5e-5 \
+  --id_lambda 0.3 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 \
+  --aging_lambda 5 --aging_lambda_decoder_scale 0.5 \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --nearest_neighbor_id_loss_lambda 0.05 \
+  --contrastive_id_lambda 0.02 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 38 --mb_apply_max_age 42 --mb_temperature 0.12 \
+  --roi_id_lambda_s2 0.05 --roi_use_eyes --roi_use_mouth \
+  --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
+  --extrapolation_start_step 1000000000 \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --val_interval 500 --val_deterministic --val_max_batches 2 \
+  --resume_checkpoint experiments/full_training_run/00070/checkpoints/best_model.pt \
+  --target_age_fixed 40 --target_age_jitter 2
+
+Example inference (multiple ages)
+python scripts/inference_unified.py \
+  --checkpoint_path experiments/phase3_oneshot_40/00006/checkpoints/best_model.pt \
+  --input_dir data/inference_aligned \
+  --output_dir inference_results/phase3_ages20_45 \
+  --target_age 20,25,30,35,40,45 \
+  --aging_strength 1 --create_coupled --skip_alignment --output_size 1024
+
+Notes
+- Monitor `timestamp.txt` for FAISS diagnostics and `used_ema=1` on eval. If identity stalls after ~7–8k, extend +2k–3k at LR 1e-5 or reduce contrastive λ to 0.015.
+
+Final report — Entry 002 (experiments/phase3_oneshot_40/00006)
+- Setup recap:
+  - Base checkpoint: experiments/full_training_run/00070/checkpoints/best_model.pt
+  - Age lock: 40 ± 2 (miner window [38,42])
+  - FAISS soft band: k=48, top_m=768, sim∈[0.25,0.60], τ=0.12
+  - ROI‑ID (S2): eyes+mouth, λ=0.05; EMA eval on decoder, deterministic val
+- Best validation snapshots (from checkpoints/timestamp.txt):
+  - 52.5k: loss≈0.384; id≈0.144; lpips≈0.139; l2≈0.00936; w_norm≈36.93; roiλ=0.05; used_ema=1
+  - 56.0k: loss≈0.3786–0.3788; id≈0.139–0.140; lpips≈0.136–0.137; l2≈0.00897–0.00903; w_norm≈37.03; used_ema=1
+  - 58.0k: loss≈0.37535; id≈0.1359; lpips≈0.1350; l2≈0.00892; w_norm≈37.07; used_ema=1
+  - 59.0k: loss≈0.37341; id≈0.1343; lpips≈0.13434; l2≈0.00886; w_norm≈37.07; used_ema=1 (best total window)
+  - 60.0k (final): loss≈0.37422; id≈0.1350; lpips≈0.13454; l2≈0.00884; w_norm≈37.14; used_ema=1
+- Behavior:
+  - Stable monotonic tightening after ~52k; periodic “PHASE3: plateau” markers; FAISS diagnostics show k_effective=48 with candidate_count≈7–15 late S2.
+  - EMA used consistently for eval; ROI pairs active for eyes+mouth; age lock maintained within [38,42].
+- Comparison vs Entry 001 (00004, base 00063):
+  - Entry 001 best total≈0.3780 at 59.5k; Entry 002 improves to ≈0.3734 at 59.0k.
+  - Identity: 001 id≈0.1409 best vs 002 id≈0.1343 best (≈4.7% lower, better).
+  - Perceptual/pixel: 001 lpips≈0.1398, l2≈0.00946 vs 002 lpips≈0.1343, l2≈0.00886 (both improved).
+  - Regularization: w_norm similar late (≈37); both stable with EMA.
+- Takeaways:
+  - Using the newer 00070 base with FAISS soft miner and eyes+mouth ROI‑ID yielded better totals and identity than Entry 001.
+  - Gains concentrated between 52k–59k; after 60k regression is minor, suggesting ideal stop ≈58–59k.
+- Artifacts/notes:
+  - `timestamp.txt` includes FAISS diagnostics and plateau breadcrumbs; no NaNs or instability observed.
+  - Consider early stop at ~59k in replications, or a brief +1–2k extension if id improves without lpips/l2 regression.
