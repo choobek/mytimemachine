@@ -8,7 +8,7 @@ MyTimeMachine architecture (current). An input face is encoded into StyleGAN’s
 - Auxiliary networks: IR-SE50 (identity; `pretrained_models/model_ir_se50.pth`), DEX/VGG age classifier (`pretrained_models/dex_age_classifier.pth`).
  - Optional identity/diagnostics additions from recent trainings:
    - FAISS-based age-aware impostor mining for contrastive ID with semi-hard negatives (`training/impostor_faiss.py`).
-   - ROI-ID over eyes and mouth guided by Dlib landmarks (see `training/roi_crops.py`).
+   - ROI-ID over eyes, mouth, nose, and brow+eyes guided by Dlib landmarks (see `training/roi_crops.py`).
    - Geometry ratios loss using 68 facial landmarks (eyes, nose, mouth) to penalize shape drift.
    - Age-conditional actor anchors in W-space (5-year bins) to gently reduce latent drift toward a specific actor around target ages.
 
@@ -42,8 +42,8 @@ Implementation pointers: `training/impostor_bank.py` (bank access), `training/im
 Twelfth training (soft miner) recommended profile: enable FAISS with a softer band and larger pre‑pool, e.g., `mb_k≈48`, `mb_top_m≈768`, band `[0.25, 0.60]`, `mb_temperature≈0.12`, age window `[35,45]`. Miner diagnostics (candidate_count after banding, similarity mean/std and percentiles, k_effective, band_min/max) are logged to TensorBoard and appended to `experiments/**/checkpoints/timestamp.txt` at validation.
  Recent stable profiles also include a mid‑boost ROI‑ID schedule in Stage‑1 and decoder‑EMA for evaluation, coexisting with the FAISS soft miner without instability.
 
-6) ROI‑ID details (eyes + mouth)
-ROIs are derived from 68-point Dlib landmarks. Typical settings: `--roi_size 112`, `--roi_pad 0.35`, `--roi_jitter 0.06` with eyes and mouth enabled. This loss emphasizes micro-identity (eye shape, inter‑ocular geometry, mouth corners/asymmetry) and complements global ID. Implementation: `training/roi_crops.py`.
+6) ROI‑ID details (eyes, mouth, nose, brow+eyes)
+ROIs are derived from 68-point Dlib landmarks. Typical settings: `--roi_size 112`, `--roi_pad 0.35`, `--roi_jitter 0.06`. Enable regions via `--roi_use_eyes`, `--roi_use_mouth`, and optionally `--roi_use_nose`, `--roi_use_broweyes`. This loss emphasizes micro-identity (eye/brow shape, inter‑ocular geometry, nose structure, mouth corners/asymmetry) and complements global ID. Stage‑1 commonly uses a mid‑boost schedule for ROI‑ID λ (e.g., `0:0.05,20000:0.07,36000:0.05`); with extended ROIs a gentler ramp can be used (e.g., `0:0.03,10000:0.05,20000:0.07,36000:0.05`). Implementation: `training/roi_crops.py`.
 
 7) Default/stable training ranges (reference)
 - Stage 1: `id_lambda≈0.3–0.35`, `lpips_lambda_crop≈0.8–0.9`, `l2_lambda≈0.08–0.10`, `l2_lambda_crop≈0.4–0.5`, `cycle_lambda≈1.5`, `adaptive_w_norm_lambda≈20`, `nearest_neighbor_id_loss_lambda≈0.1–0.2`, `contrastive_id_lambda≈0.03–0.04`, FAISS optional (`mb_k 32–64`, `mb_top_m 512`, `mb_min_sim 0.20`, `mb_max_sim 0.70`, `mb_temperature 0.12`).
@@ -62,3 +62,13 @@ The current system augments the original SAM+Adapter+StyleGAN pipeline with iden
 - ROI‑ID schedule breadcrumbs: current ROI‑ID λ is tracked during Stage‑1 (e.g., 0.05→0.07→0.05), aiding quick checks without opening TensorBoard.
 - EMA markers: validation/eval indicates whether EMA was used (`used_ema=1`) and EMA buffers persist across resumes when `--ema --eval_with_ema` are set.
 - Anchor breadcrumbs: Stage‑1 logs include anchor configuration (bin count/size, space, λ) and a small `loss_anchor` scalar when age anchors are enabled.
+
+11) Phase‑3 per‑shot fine‑tuning (optional)
+Phase‑3 performs brief, per‑actor decoder fine‑tuning on a small curated set (e.g., `data/shot_train`/`data/shot_test`) to lock identity around a specific age window. Typical setup:
+- Start from a strong Stage‑2 checkpoint (e.g., `experiments/full_training_run/**/checkpoints/best_model.pt`) and train decoder only (`--train_decoder`).
+- Keep EMA on decoder for evaluation/checkpointing (`--ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema`).
+- Use FAISS soft miner within a narrow age window (e.g., target 40±2 via `--mb_apply_min_age 38 --mb_apply_max_age 42`, band `[0.25,0.60]`, `mb_k≈48`, `mb_top_m≈768`, `--mb_temperature 0.12`).
+- ROI‑ID active with a fixed λ in this decoder phase (≈0.05), typically eyes and mouth; extended ROIs are optional.
+- Disable extrapolation (`--extrapolation_start_step 1000000000`) to stay in‑domain.
+- Modest LR/steps (e.g., `--learning_rate 1.5e-5`, `--max_steps 10000`) and deterministic validation (`--val_interval 500 --val_deterministic --val_max_batches 2`).
+Outputs live under `experiments/phase3_oneshot_40/**` (symlink `experiments/_latest_phase3`), and the resulting checkpoint can be used with `scripts/inference_unified.py`.
