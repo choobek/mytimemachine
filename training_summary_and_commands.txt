@@ -1276,3 +1276,61 @@ Monitoring & acceptance (extended ROIs):
 - Expect `train/roi_pairs_nose` and `train/roi_pairs_broweyes` > 0 alongside eyes/mouth; `loss_roi_id` finite and stable.
 - Mid-boost visible: `train/roi_id_lambda_current` traverses 0.05→0.07→0.05 around 0/20k/36k; S2 shows `0.05` flat.
 - Identity/perceptual similar to Eleventh/Twelfth; watch for over‑sharpening in eyes/brows; dial mid-boost to 0.06–0.07 if needed.
+
+Final report
+
+Scope and goal
+- Strengthen micro‑identity retention by extending ROI‑ID beyond eyes+mouth to include nose and a combined brow+eyes region, keeping the stable stack (EMA eval, mid‑boost ROI schedule, FAISS miner, NN‑ID, contrastive impostor). Extrapolation disabled (in‑domain).
+
+What changed vs strong prior baselines (Eleventh–Fourteenth)
+- ROI‑ID regions: eyes + mouth → eyes + mouth + nose + brow/eyes (new)
+- ROI schedule S1: 0:0.03 → 10k:0.05 → 20k:0.07 → 36k:0.05 (slightly lower start to accommodate added ROIs)
+- Miner: FAISS custom, k=64, top_m=512, band [0.20,0.70], τ=0.12, ages [35,45]
+- S2 LR set to 2e‑5 in this run (some prior strong S2 runs used 3e‑5)
+
+Stage 1 — 00068 (encoder+decoder, 0→40k)
+- Config (opt.json): id_lambda=0.3, lpips_crop=0.8, l2=0.1, w_norm=0.003, aging=5, cycle=1.5, NN‑ID λ=0.10, contrastive λ=0.04, FAISS: k=64/top_m=512/band[0.20,0.70]/τ=0.12 (ages 35–45), ROI: eyes+mouth+nose+broweyes, schedule 0.03→0.05 (10k)→0.07 (20k)→0.05 (36k), EMA eval on.
+- Timestamp highlights (checkpoints/timestamp.txt):
+  - Best S1 total: 1.060 at step 19.5k.
+  - Heads at/before best windows (≈18.5k–19.5k):
+    - loss_id_real ≈ 0.299–0.315; lpips_real ≈ 0.291–0.293; l2_real ≈ 0.046–0.049; w_norm_real ≈ 41–42.
+    - loss_lpips_crop ≈ 0.166–0.213; l2_crop ≈ 0.048–0.078; loss_real ≈ 0.658–0.689.
+  - ROI evidence: roi_pairs_eyes/mouth/nose/broweyes=2 each consistently; roi_landmark_failures=0; loss_roi_id trended from ≈0.47 early to ≈0.34–0.36 mid/late.
+  - ROI schedule executed as planned: roi_lambda_current 0.03 (≤10k) → 0.05 (10k→20k) → 0.07 (20k→36k) → 0.05 (≥36k).
+  - Miner diagnostics (“mb:” lines): prof=custom, k_effective=64; candidate_count typically 40–60 early, trending toward ~35–50 mid/late; simμ ≈ 0.231–0.257; mb_applied_ratio ≈ 0.75 when batch ages in-window.
+
+Stage 2 — 00070 (decoder‑only, 40k→55k)
+- Config (opt.json): resume=00068/iteration_40000.pt; train_decoder only; LR=2e‑5; id_lambda=0.3; NN‑ID λ=0.05; contrastive λ=0.025; ROI‑ID S2 λ=0.04 (eyes+mouth+nose+broweyes); w_norm_decoder_scale=0.5; EMA eval on; save_interval=2k.
+- Timestamp highlights (checkpoints/timestamp.txt):
+  - Best S2 total: 0.8356 at step 50.5k (earlier bests: 0.845@40k → 0.843@41k → 0.841@41.5k → 0.840@43.5k → 0.837@47k).
+  - Heads near best (50.5k): loss_id_real ≈ 0.328; lpips_real ≈ 0.297; l2_real ≈ 0.046; loss_real ≈ 0.480; w_norm_real ≈ 37.1; used_ema=1; roi_lambda_current=0.04.
+  - Late S2 window (≥49k) clustered ~0.836–0.849; plateau after ~50k.
+
+Comparisons vs previous trainings (quantitative)
+- vs Tenth (FAISS + ROI eyes/mouth): best S2 ≈ 0.809 → Fifteenth S2 ≈ 0.836 (higher total).
+- vs Eleventh (EMA + ROI schedule): best S2 ≈ 0.807–0.809 → Fifteenth ≈ 0.836.
+- vs Twelfth (soft‑0.60 miner + diagnostics): best S2 ≈ 0.8006 → Fifteenth ≈ 0.836.
+- vs Fourteenth (S1 anchors; S2 anchors off): best S2 ≈ 0.804 → Fifteenth ≈ 0.836.
+- Notes on comparability: Fifteenth adds two extra ROI regions (nose, brow/eyes) and used S2 LR 2e‑5 (lower than 3e‑5 used in several prior bests). Added ROI terms and lower LR likely increased totals and limited S2 tightening. Despite higher totals, regularization is excellent (w_norm_real ≈ 37 late S2, matching/bettering earlier runs).
+
+Qualitative expectations (micro‑identity)
+- Extended ROIs should preferentially sharpen nose shape and eyebrow/eye structure that global ID metrics under‑weight. Quantitative totals alone may not reflect these micro‑identity gains; side‑by‑side inspection is recommended.
+
+Visual inspection
+- Altough quantitative totals are worse, the output images looks tiny-bit better with this training
+
+Takeaways
+- S1 behaved smoothly with the extended ROIs and schedule; convergence similar to recent runs, best at 19.5k, stable through 40k.
+- S2 achieved stable low w_norm_real (~37) and modest tightening but underperformed prior best totals, likely due to (a) extra ROI heads and (b) LR=2e‑5.
+
+Recommendations
+- For parity with prior bests, raise S2 LR to 3e‑5 and keep EMA; keep ROI‑ID S2 at 0.04–0.05.
+- Consider miner soft profile (k=48, band [0.25,0.60]) used in Twelfth to reduce over‑hard negatives and totals; keep k_effective diagnostic lines.
+- Keep extended ROIs in S1; if over‑sharpening appears, cap the mid‑boost at 0.06.
+- Align contrastive λ in S2 to 0.02 (used in several best runs) to reduce canonicalization pressure.
+- Judge final adoption by visual A/B on eyes, nose, and brow fidelity; totals may remain slightly higher with extended ROIs.
+
+Artifacts present (useful breadcrumbs)
+- `miner_profile.txt`: custom
+- `timestamp.txt`: frequent “mb:” diagnostics with k_effective=64; roi_pairs_* show all four regions active; `used_ema=1` markers present in both stages.
+
