@@ -1,0 +1,61 @@
+Phase-3 Summary and Commands
+
+Entry 001 — One-shot 40±2 (experiments/phase3_oneshot_40/00004)
+- Exp dir: experiments/phase3_oneshot_40/00004
+- Base checkpoint: experiments/full_training_run/00063/checkpoints/best_model.pt
+- Fixed target age: 40 ± 2
+- Miner window: [38,42]; FAISS soft band: k=48, top_m=768, sim∈[0.25,0.60], τ=0.12
+- Safety rails: extrapolation disabled; EMA eval on decoder (decay=0.999); deterministic val (max 2 batches)
+- ROI-ID (S2): λ=0.05, eyes+mouth (nose/broweyes were enabled for this run)
+- Datasets: train=data/shot_train, test=data/shot_test
+- Best validation: step=59500, total loss≈0.3780; loss_id_real≈0.1409, lpips_real≈0.1398, l2_real≈0.00946
+- Identity improvement vs resume point (50500): loss_id_real ↓ from ~0.1583 → ~0.1409 (~11% reduction)
+- Plateau hints observed after ~56k; marginal gains thereafter
+- Checkpoints:
+  - Best EMA: experiments/phase3_oneshot_40/00004/checkpoints/phase3_best_ema.pt
+  - Last:     experiments/phase3_oneshot_40/00004/checkpoints/phase3_last.pt
+  - Symlink:  experiments/_latest_phase3 → this run
+
+Reproduce training (one-shot Phase-3)
+python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging \
+  --train_dataset data/shot_train \
+  --test_dataset data/shot_test \
+  --exp_dir experiments/phase3_oneshot_40 \
+  --start_from_encoded_w_plus --train_decoder \
+  --batch_size 2 --workers 2 \
+  --max_steps 10000 \
+  --learning_rate 1.5e-5 \
+  --id_lambda 0.3 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 \
+  --aging_lambda 5 --aging_lambda_decoder_scale 0.5 \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --nearest_neighbor_id_loss_lambda 0.05 \
+  --contrastive_id_lambda 0.02 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 38 --mb_apply_max_age 42 --mb_temperature 0.12 \
+  --roi_id_lambda_s2 0.05 --roi_use_eyes --roi_use_mouth \
+  --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
+  --extrapolation_start_step 1000000000 \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --val_interval 500 --val_deterministic --val_max_batches 2 \
+  --resume_checkpoint experiments/full_training_run/00063/checkpoints/best_model.pt \
+  --target_age_fixed 40 --target_age_jitter 2
+
+Example inference (multiple ages)
+python scripts/inference_unified.py \
+  --checkpoint_path experiments/phase3_oneshot_40/00004/checkpoints/best_model.pt \
+  --input_dir data/inference_aligned \
+  --output_dir inference_results/phase3_ages20_45 \
+  --target_age 20,25,30,35,40,45 \
+  --aging_strength 1 --create_coupled --skip_alignment --output_size 1024
+
+Notes
+- Acceptance criteria: age lock [38,42] upheld; periodic plateau messages logged; identity trend non-increasing over rolling windows.
+- For small additional gains: extend +3k–5k steps at LR 1e-6; optionally set ROI-ID S2 λ=0.06–0.07 and mb temperature τ=0.10.

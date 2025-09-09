@@ -1199,9 +1199,9 @@ Goal: strengthen micro-identity retention by extending ROI-ID beyond eyes and mo
 
 Key settings (Stage 1 → Stage 2):
 - Coach: orig_nn; extrapolation disabled (in-domain)
-- ROI-ID: enable eyes, mouth, nose, brow+eyes; Stage-1 mid-boost schedule 0.05→0.07→0.05; Stage-2 fixed 0.05
+- ROI-ID: enable eyes, mouth, nose, brow+eyes; Stage-1 schedule 0.03→0.05→0.07→0.05 (lower start to accommodate added ROIs); Stage-2 fixed 0.05
 - NN‑ID: S1=0.10, S2=0.05 (interpolation only)
-- Contrastive (age-aware impostor): S1=0.04, S2=0.02; FAISS soft-0.60 (k=48, top_m=768, band [0.25,0.60], τ=0.12, ages [35,45])
+- Contrastive (age-aware impostor): S1=0.04, S2=0.02; Miner aligned to 00041 at early S1 (k=64, top_m=512, band [0.20,0.70], τ=0.12, ages [35,45])
 - Geometry: off for this A/B (can be re-enabled later if needed)
 - EMA: decoder, eval swap on
 - Other regs: adaptive_w_norm_lambda=20, w_norm_lambda=0.003, cycle_lambda=1.5, crop LPIPS/L2 enabled
@@ -1226,13 +1226,13 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
   --nearest_neighbor_id_loss_lambda 0.10 \
   --contrastive_id_lambda 0.04 \
   --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
-  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_top_m 512 --mb_k 64 --mb_min_sim 0.20 --mb_max_sim 0.70 \
   --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
   --extrapolation_start_step 1000000000 \
   --roi_id_lambda 0.05 --roi_use_eyes --roi_use_mouth --roi_use_nose --roi_use_broweyes \
   --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
   --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
-  --roi_id_schedule_s1 \"0:0.05,20000:0.07,36000:0.05\" \
+  --roi_id_schedule_s1 \"0:0.03,10000:0.05,20000:0.07,36000:0.05\" \
   --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
   --val_deterministic --val_max_batches 2 --val_interval 500 \
   --warmup_steps 500 --min_lr 5e-7 \
@@ -1258,11 +1258,11 @@ bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
   --cycle_lambda 1.5 \
   --adaptive_w_norm_lambda 20 \
   --nearest_neighbor_id_loss_lambda 0.05 \
-  --contrastive_id_lambda 0.02 \
+  --contrastive_id_lambda 0.025 \
   --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
-  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_top_m 768 --mb_k 64 --mb_min_sim 0.20 --mb_max_sim 0.70 \
   --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
-  --roi_id_lambda_s2 0.05 --roi_use_eyes --roi_use_mouth --roi_use_nose --roi_use_broweyes \
+  --roi_id_lambda_s2 0.04 --roi_use_eyes --roi_use_mouth --roi_use_nose --roi_use_broweyes \
   --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
   --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
   --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \

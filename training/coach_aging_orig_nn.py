@@ -70,7 +70,17 @@ class Coach:
 										  num_workers=int(self.opts.test_workers),
 										  drop_last=True)
 
-		self.age_transformer = AgeTransformer(target_age=self.opts.target_age)
+		# Age sampling: support fixed age with optional jitter if requested
+		if getattr(self.opts, 'target_age_fixed', None) is not None:
+			clip_min = getattr(self, 'train_min_age', getattr(self, 'aging_loss', None).min_age if hasattr(self, 'aging_loss') else 0)
+			clip_max = getattr(self, 'train_max_age', getattr(self, 'aging_loss', None).max_age if hasattr(self, 'aging_loss') else 100)
+			self.age_transformer = AgeTransformer(
+				target_age=int(self.opts.target_age_fixed),
+				jitter=int(getattr(self.opts, 'target_age_jitter', 0) or 0),
+				clip_bounds=(clip_min, clip_max)
+			)
+		else:
+			self.age_transformer = AgeTransformer(target_age=self.opts.target_age)
 
 		# Age-anchor configuration (Task 4)
 		self.anchor_lambda = float(getattr(self.opts, 'age_anchor_lambda', 0.0) or 0.0)
@@ -130,6 +140,20 @@ class Coach:
 			self.opts.save_interval = self.opts.max_steps
 		
 		# (moved) Load checkpoint happens after EMA helpers init so EMA can be restored
+		# Symlink convenience for latest phase3 directory
+		try:
+			latest = os.path.join('experiments', '_latest_phase3')
+			run_abs = os.path.realpath(self.opts.exp_dir)
+			os.makedirs(os.path.dirname(latest), exist_ok=True)
+			# Force-update symlink
+			if os.path.islink(latest) or os.path.exists(latest):
+				try:
+					os.remove(latest)
+				except Exception:
+					pass
+			os.symlink(run_abs, latest)
+		except Exception:
+			pass
 
 		# Contrastive impostor bank and options
 		self.contrastive_id_lambda = float(getattr(self.opts, 'contrastive_id_lambda', 0.0) or 0.0)
@@ -170,6 +194,19 @@ class Coach:
 		except Exception:
 			pass
 
+		# Startup breadcrumb: phase-3 fixed-age + miner window + lr + resume
+		try:
+			fixed = getattr(self.opts, 'target_age_fixed', None)
+			jitter = int(getattr(self.opts, 'target_age_jitter', 0) or 0)
+			lo = getattr(self.opts, 'mb_apply_min_age', None)
+			hi = getattr(self.opts, 'mb_apply_max_age', None)
+			lr = float(getattr(self.opts, 'learning_rate', 0.0) or 0.0)
+			resume = str(getattr(self.opts, 'resume_checkpoint', '') or '')
+			with open(os.path.join(self.checkpoint_dir, 'timestamp.txt'), 'a') as f:
+				f.write(f"phase3: fixed_age={fixed} jitter={jitter} miner_window=[{lo},{hi}] lr={lr} resume={resume}\n")
+		except Exception:
+			pass
+
 		# ROI-ID micro-loss configuration
 		self.roi_id_lambda = float(getattr(self.opts, 'roi_id_lambda', 0.0) or 0.0)
 		self.roi_size = int(getattr(self.opts, 'roi_size', 112) or 112)
@@ -197,6 +234,28 @@ class Coach:
 			self.roi_s1_schedule = parse_step_schedule(getattr(self.opts, 'roi_id_schedule_s1', None))
 		except Exception:
 			self.roi_s1_schedule = []
+
+		# --- Phase-3 acceptance tracking ---
+		# Target age lock bounds for assertions/logging
+		try:
+			fixed_age = getattr(self.opts, 'target_age_fixed', None)
+			if fixed_age is not None:
+				jit = int(getattr(self.opts, 'target_age_jitter', 0) or 0)
+				tight = max(2, jit)
+				self._age_lock_lo = max(int(fixed_age) - tight, 0)
+				self._age_lock_hi = int(fixed_age) + tight
+			else:
+				self._age_lock_lo = None
+				self._age_lock_hi = None
+		except Exception:
+			self._age_lock_lo = None
+			self._age_lock_hi = None
+		# Identity trend trackers
+		self._id_loss_window = collections.deque()
+		self._best_train_id_loss = float('inf')
+		self._best_id_improve_real = float('-inf')
+		self._last_best_train_id_step = 0
+		self._last_best_val_step = 0
 		self.roi_lambda_base = float(getattr(self.opts, 'roi_id_lambda', 0.0) or 0.0)
 		self.roi_lambda_s2 = getattr(self.opts, 'roi_id_lambda_s2', None)
 
@@ -384,6 +443,19 @@ class Coach:
 														  input_ages=input_ages,
 														  no_aging=no_aging,
 														  data_type="real")
+				# Track train ID trends window to check non-increasing over 1500 steps
+				try:
+					if 'loss_id_real' in loss_dict:
+						cur_id = float(loss_dict['loss_id_real'])
+						self._best_train_id_loss = min(self._best_train_id_loss, cur_id)
+						if cur_id <= self._best_train_id_loss + 1e-12:
+							self._last_best_train_id_step = self.global_step
+						self._id_loss_window.append((self.global_step, cur_id))
+						while len(self._id_loss_window) > 0 and (self.global_step - self._id_loss_window[0][0]) > 1500:
+							self._id_loss_window.popleft()
+				except Exception:
+					pass
+
 				loss.backward()
 
 				# perform cycle on generate images by setting the target ages to the original input ages
@@ -504,18 +576,55 @@ class Coach:
 						else:
 							miner_line = f"mb: prof={profile} k={self.mb_k} band=[{self.mb_min_sim:.2f},{self.mb_max_sim:.2f}]"
 						with open(os.path.join(self.checkpoint_dir, 'timestamp.txt'), 'a') as f:
+							# used_ema marker and optional losses for quick inspection
+							line = f"used_ema={int(used_ema)}"
+							try:
+								if isinstance(val_loss_dict, dict):
+									if 'loss_id_real' in val_loss_dict:
+										line += f" id={float(val_loss_dict['loss_id_real']):.3f}"
+									if 'loss_lpips_real' in val_loss_dict:
+										line += f" lpips={float(val_loss_dict['loss_lpips_real']):.3f}"
+									if 'loss_l2_real' in val_loss_dict:
+										line += f" l2={float(val_loss_dict['loss_l2_real']):.3f}"
+							except Exception:
+								pass
+							f.write(line + "\n")
 							f.write(miner_line + "\n")
+						# Plateau hint: if total val loss hasn't improved in 1200 steps and loss_id_real hasn't improved in 800 steps
+						try:
+							no_val_improve = (self.global_step - getattr(self, '_last_best_val_step', 0)) >= 1200
+							no_id_improve = (self.global_step - getattr(self, '_last_best_train_id_step', 0)) >= 800
+							if no_val_improve and no_id_improve:
+								with open(os.path.join(self.checkpoint_dir, 'timestamp.txt'), 'a') as f:
+									f.write("PHASE3: plateau\n")
+						except Exception:
+							pass
 					except Exception:
 						pass
 					if val_loss_dict and (self.best_val_loss is None or val_loss_dict['loss'] < self.best_val_loss):
 						self.best_val_loss = val_loss_dict['loss']
 						self.checkpoint_me(val_loss_dict, is_best=True)
+						# Reset val improvement timer
+						self._last_best_val_step = self.global_step
+						# Also snapshot best-EMA weights for convenience if EMA used during eval
+						try:
+							if getattr(self, 'ema_enabled', False) and getattr(self, 'eval_with_ema', False):
+								best_ema_path = os.path.join(self.checkpoint_dir, 'phase3_best_ema.pt')
+								torch.save(self.__get_save_dict(), best_ema_path)
+						except Exception:
+							pass
 
 				if self.global_step % self.opts.save_interval == 0 or self.global_step == self.opts.max_steps:
 					if val_loss_dict is not None:
 						self.checkpoint_me(val_loss_dict, is_best=False)
 					else:
 						self.checkpoint_me(loss_dict, is_best=False)
+					# Save explicit last-weights snapshot for hygiene
+					try:
+						last_path = os.path.join(self.checkpoint_dir, 'phase3_last.pt')
+						torch.save(self.__get_save_dict(), last_path)
+					except Exception:
+						pass
 
 				if self.global_step == self.opts.max_steps:
 					print('OMG, finished training!')
@@ -744,12 +853,22 @@ class Coach:
 		print(f'Loading dataset for {self.opts.dataset_type}')
 		dataset_args = data_configs.DATASETS[self.opts.dataset_type]
 		transforms_dict = dataset_args['transforms'](self.opts).get_transforms()
-		train_dataset = ImagesDataset(source_root=dataset_args['train_source_root'],
+		train_root = dataset_args['train_source_root']
+		if hasattr(self.opts, 'train_dataset') and self.opts.train_dataset and os.path.isdir(self.opts.train_dataset):
+			train_root = self.opts.train_dataset
+			dataset_args['train_target_root'] = train_root
+			print(f"Overwritting training dataset to {train_root}")
+		train_dataset = ImagesDataset(source_root=train_root,
 									  target_root=dataset_args['train_target_root'],
 									  source_transform=transforms_dict['transform_source'],
 									  target_transform=transforms_dict['transform_gt_train'],
 									  opts=self.opts)
-		test_dataset = ImagesDataset(source_root=dataset_args['test_source_root'],
+		test_root = dataset_args['test_source_root']
+		if hasattr(self.opts, 'test_dataset') and self.opts.test_dataset and os.path.isdir(self.opts.test_dataset):
+			test_root = self.opts.test_dataset
+			dataset_args['test_target_root'] = test_root
+			print(f"Overwritting test dataset to {test_root}")
+		test_dataset = ImagesDataset(source_root=test_root,
 									 target_root=dataset_args['test_target_root'],
 									 source_transform=transforms_dict['transform_source'],
 									 target_transform=transforms_dict['transform_test'],
@@ -1190,6 +1309,17 @@ class Coach:
 			else:
 				print("Could not determine step from checkpoint name, starting from 0")
 				self.global_step = 0
+
+		# If resuming, extend max_steps by additional_steps (if provided)
+		try:
+			extra = int(getattr(self.opts, 'additional_steps', 0) or 0)
+			if extra > 0:
+				new_max = int(self.global_step) + extra
+				if new_max > int(self.opts.max_steps):
+					self.opts.max_steps = new_max
+					print(f"Continuing training: +{extra} steps (total max_steps={self.opts.max_steps})")
+		except Exception:
+			pass
 		
 		# Restore EMA buffers if present and EMA is enabled
 		if self.ema_enabled and 'ema' in checkpoint:

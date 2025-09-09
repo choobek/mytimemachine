@@ -62,7 +62,17 @@ class Coach:
 										  num_workers=int(self.opts.test_workers),
 										  drop_last=True)
 
-		self.age_transformer = AgeTransformer(target_age=self.opts.target_age)
+		# Age sampling: support fixed age with optional jitter if requested
+		if getattr(self.opts, 'target_age_fixed', None) is not None:
+			clip_min = getattr(self, 'train_min_age', getattr(self, 'aging_loss', None).min_age if hasattr(self, 'aging_loss') else 0)
+			clip_max = getattr(self, 'train_max_age', getattr(self, 'aging_loss', None).max_age if hasattr(self, 'aging_loss') else 100)
+			self.age_transformer = AgeTransformer(
+				target_age=int(self.opts.target_age_fixed),
+				jitter=int(getattr(self.opts, 'target_age_jitter', 0) or 0),
+				clip_bounds=(clip_min, clip_max)
+			)
+		else:
+			self.age_transformer = AgeTransformer(target_age=self.opts.target_age)
 
 		# Initialize logger
 		log_dir = os.path.join(opts.exp_dir, 'logs')

@@ -13,6 +13,8 @@ class TrainOptions:
                                  help='Number of gpus to use')
         self.parser.add_argument('--train_dataset', type=str,
                                     help='Path to training dataset')
+        self.parser.add_argument('--test_dataset', type=str, default=None,
+                                    help='Optional path to test/validation dataset')
         self.parser.add_argument('--exp_dir', type=str,
                                  help='Path to experiment output directory')
         self.parser.add_argument('--dataset_type', default='ffhq_aging', type=str,
@@ -117,6 +119,10 @@ class TrainOptions:
         # arguments for aging
         self.parser.add_argument('--target_age', default=None, type=str,
                                  help='Target age for training. Use `uniform_random` for random sampling of target age')
+        self.parser.add_argument('--target_age_fixed', type=int, default=None,
+                                 help='If set, use this fixed target age instead of uniform sampling.')
+        self.parser.add_argument('--target_age_jitter', type=int, default=0,
+                                 help='Uniform ±jitter around fixed target age (clip to dataset min/max).')
         self.parser.add_argument('--use_weighted_id_loss', action="store_true",
                                  help="Whether to weight id loss based on change in age (more change -> less weight)")
         self.parser.add_argument('--pretrained_psp_path', default=model_paths['pretrained_psp'], type=str,
@@ -260,4 +266,19 @@ class TrainOptions:
             else:
                 # Unknown profile (should not happen due to choices); ignore
                 pass
+        # Smart miner defaults for Phase-3 fixed age: tighten window around fixed target age
+        try:
+            if (getattr(opts, 'target_age_fixed', None) is not None and
+                getattr(opts, 'mb_apply_min_age', None) is None and
+                getattr(opts, 'mb_apply_max_age', None) is None):
+                jitter = int(getattr(opts, 'target_age_jitter', 0) or 0)
+                tight = max(2, jitter)
+                center = int(opts.target_age_fixed)
+                lo = max(center - tight, 0)
+                hi = center + tight
+                opts.mb_apply_min_age = lo
+                opts.mb_apply_max_age = hi
+        except Exception:
+            # Do not block training on smart-default errors
+            pass
         return opts
