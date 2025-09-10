@@ -25,8 +25,9 @@ GRAD_CLIP_NORM=1.0
 WARMUP_STEPS=500
 MIN_LR=5e-7
 
-# Stage 1 hparams (Eleventh training plan: EMA + ROI schedule)
+# Stage 1 hparams (Dynamic ID/Aging schedules + EMA + ROI schedule)
 ID_LAMBDA_S1=0.3
+ID_LAMBDA_S1_SCHEDULE="0:0.30,20000:0.40,36000:0.50"
 LPIPS_LAMBDA_S1=0.1
 LPIPS_LAMBDA_AGING_S1=0.1
 LPIPS_LAMBDA_CROP_S1=0.8
@@ -35,6 +36,7 @@ L2_LAMBDA_AGING_S1=0.25
 L2_LAMBDA_CROP_S1=0.5
 W_NORM_LAMBDA_S1=0.003
 AGING_LAMBDA_S1=5
+AGING_LAMBDA_S1_SCHEDULE="0:5.0,30000:5.5,36000:6.0"
 CYCLE_LAMBDA_S1=1.5
 ADAPTIVE_W_NORM_LAMBDA_S1=20
 # Disable extrapolation (interpolation-only) and add NN-ID reg
@@ -95,8 +97,9 @@ TARGET_ID_LAMBDA_S2=0.05
 TARGET_ID_APPLY_MIN_AGE=38
 TARGET_ID_APPLY_MAX_AGE=42
 
-# Stage 2 hparams (Ninth training plan)
+# Stage 2 hparams (fixed strong ID/Aging)
 ID_LAMBDA_S2=0.3
+ID_LAMBDA_S2_FIXED=0.45
 LPIPS_LAMBDA_S2=$LPIPS_LAMBDA_S1
 LPIPS_LAMBDA_AGING_S2=$LPIPS_LAMBDA_AGING_S1
 LPIPS_LAMBDA_CROP_S2=$LPIPS_LAMBDA_CROP_S1
@@ -106,6 +109,7 @@ L2_LAMBDA_CROP_S2=$L2_LAMBDA_CROP_S1
 W_NORM_LAMBDA_S2=$W_NORM_LAMBDA_S1
 W_NORM_LAMBDA_DECODER_SCALE_S2=0.5
 AGING_LAMBDA_S2=$AGING_LAMBDA_S1
+AGING_LAMBDA_S2_FIXED=6.0
 AGING_LAMBDA_DECODER_SCALE_S2=0.5
 CYCLE_LAMBDA_S2=$CYCLE_LAMBDA_S1
 ADAPTIVE_W_NORM_LAMBDA_S2=$ADAPTIVE_W_NORM_LAMBDA_S1
@@ -149,6 +153,7 @@ run_stage1_phase1() {
     --save_interval "$SAVE_INTERVAL" \
     --start_from_encoded_w_plus \
     --id_lambda "$ID_LAMBDA_S1" \
+    --id_lambda_schedule_s1 "$ID_LAMBDA_S1_SCHEDULE" \
     --lpips_lambda "$LPIPS_LAMBDA_S1" \
     --lpips_lambda_aging "$LPIPS_LAMBDA_AGING_S1" \
     --lpips_lambda_crop "$LPIPS_LAMBDA_CROP_S1" \
@@ -157,6 +162,7 @@ run_stage1_phase1() {
     --l2_lambda_crop "$L2_LAMBDA_CROP_S1" \
     --w_norm_lambda "$W_NORM_LAMBDA_S1" \
     --aging_lambda "$AGING_LAMBDA_S1" \
+    --aging_lambda_schedule_s1 "$AGING_LAMBDA_S1_SCHEDULE" \
     --cycle_lambda "$CYCLE_LAMBDA_S1" \
     --input_nc "$INPUT_NC" \
     --target_age "$TARGET_AGE" \
@@ -346,6 +352,7 @@ run_stage2() {
     --save_interval "$SAVE_INTERVAL" \
     --start_from_encoded_w_plus \
     --id_lambda "$ID_LAMBDA_S2" \
+    --id_lambda_s2 "$ID_LAMBDA_S2_FIXED" \
     --lpips_lambda "$LPIPS_LAMBDA_S2" \
     --lpips_lambda_aging "$LPIPS_LAMBDA_AGING_S2" \
     --lpips_lambda_crop "$LPIPS_LAMBDA_CROP_S2" \
@@ -355,6 +362,7 @@ run_stage2() {
     --w_norm_lambda "$W_NORM_LAMBDA_S2" \
     --w_norm_lambda_decoder_scale "$W_NORM_LAMBDA_DECODER_SCALE_S2" \
     --aging_lambda "$AGING_LAMBDA_S2" \
+    --aging_lambda_s2 "$AGING_LAMBDA_S2_FIXED" \
     --aging_lambda_decoder_scale "$AGING_LAMBDA_DECODER_SCALE_S2" \
     --cycle_lambda "$CYCLE_LAMBDA_S2" \
     --input_nc "$INPUT_NC" \

@@ -814,6 +814,7 @@ Actionable guidance:
 
 
 -------------------------------------
+
 Twelfth training plan — FAISS soft miner (soft-0.60) + diagnostics
 
 What's new (implementation):
@@ -1413,3 +1414,212 @@ Notes:
 - Target-ID: uses IR-SE50 embeddings; only active for targets in [38,42]; stage-aware λ.
 - Keep extrapolation disabled; stop S2 early if plateau around 45–50k.
 
+
+Final report
+
+Runs: S1 → 00071 (encoder+decoder, 0→40k), S2 → 00072 (decoder-only, 40k→55k)
+
+Setup recap (opt.json)
+- Stage 1 (00071):
+  - New: Target-ID guidance around age 40 (bank=banks/actor40_ir.pt), λ_s1=0.10, apply ages [38,42]
+  - New: Actor anchors (1-year bins) S1-only: age_anchor_path=anchors/actor_w_age1.pt, λ=0.03, space=w, bin_size=1
+  - Coach orig_nn; interpolation-only (extrapolation_start_step=1e9)
+  - FAISS soft-ish miner: k=48, top_m=768, band [0.25,0.60], τ=0.12, ages [35,45]
+  - ROI-ID eyes+mouth with mid-boost schedule 0:0.05 → 20k:0.07 → 36k:0.05; EMA eval on
+  - Core regs: id_lambda=0.3, lpips_crop=0.8, l2=0.1, w_norm=0.003, aging=5, cycle=1.5; warmup=500, min_lr=5e-7
+- Stage 2 (00072):
+  - Decoder-only; anchors OFF; Target-ID weaker λ_s2=0.05; FAISS/ROI-ID S2=0.05 fixed; EMA eval on; LR=3e-5
+
+Timestamp highlights (selected)
+- 00071 (S1): early decay typical; ROI schedule active; Target-ID engaged in-window.
+  - used_ema=1 lines frequent; miner diagnostics "mb:" show prof=custom, k=48, band=[0.25,0.60].
+  - Representative early-best windows:
+    - 2.0k: used_ema=1 id≈0.412, lpips≈0.357, l2≈0.064; mb: cand≈17.5, simμ≈0.279
+    - 2.5k: used_ema=1 id≈0.375, lpips≈0.336, l2≈0.060; mb: cand≈13.5, simμ≈0.279
+    - 3.0k: used_ema=1 id≈0.363, lpips≈0.322, l2≈0.058; mb: cand≈27.0, simμ≈0.281
+  - Target-ID activity (real pass): target_id_applied_ratio_real≈0.75 when in-window; loss_target_id_real commonly ≈0.28–0.34 in early checkpoints, finite and stable.
+  - ROI-ID: loss_roi_id ≈0.31–0.51 early windows; roi_pairs=4 (eyes=2, mouth=2), failures≈0–1.
+  - W-norm: loss_w_norm_real decays from ~223 (step 0) into ~55–60 by ~3–5k, trending toward high‑30s by late S1.
+- 00072 (S2): early S2 best then plateau ~45–50k.
+  - 40.0k: used_ema=1 id≈0.331, lpips≈0.297, l2≈0.049; total≈0.818 (best snapshot at 40k)
+  - 41.0k: used_ema=1 id≈0.330, lpips≈0.297, l2≈0.048; total≈0.813
+  - 41.5k: used_ema=1 id≈0.327, lpips≈0.296, l2≈0.049; total≈0.811 (best of log window)
+  - Later windows fluctuate near ≈0.811–0.818; typical plateau behavior by ~45–50k.
+  - Miner: cand≈10–19; simμ≈0.274–0.280; k_effective=48; mb_applied_ratio≈0.75 when in age window.
+  - Target-ID: target_id_applied_ratio_real≈0.75 when in-window; loss_target_id_real ≈0.36–0.37 (scaled by lower λ_s2).
+  - W-norm late S2: ≈36.9–37.5 (stable, low).
+
+Comparisons vs previous trainings
+- vs Eleventh (EMA + ROI schedule; no Target-ID; anchors OFF):
+  - Totals in S2: Eleventh best ≈0.807–0.809; Sixteenth S2 best ≈0.811 (slightly higher). Identity/perceptual/pixel heads remain in the same bands; w_norm≈37 steady.
+  - Target-ID introduced small extra identity pull near 40 (loss_target_id_real finite and stable), without instability; plateau position similar (~45–50k).
+- vs Twelfth (FAISS soft‑0.60 + diagnostics; no Target-ID; anchors OFF):
+  - Twelfth S2 best ≈0.8006 (marginally lower total). Sixteenth S2 sits ≈0.811 at best window; however, Sixteenth runs Target-ID + S1 anchors, trading tiny total for more intentional 40‑yo guidance.
+  - Miner diagnostics comparable (cand, simμ); k_effective remains 48; logs consistent.
+- vs Fourteenth (S1 anchors 5‑year; no Target-ID):
+  - Sixteenth updates anchors→1‑year with λ=0.03 and adds Target‑ID. W‑norm decay early S1 appears comparably fast; S1 convergence windows arrive early as before (best early windows ~2–3k in logs), with totals later clustering in expected ranges.
+  - Final S2 best ~0.811 vs Fourteenth ~0.804; within variance across runs; Sixteenth biases identity toward age‑40 exemplars in‑window.
+- vs Fifteenth (extended ROIs; heavier ROI stack):
+  - Sixteenth S2 totals better (≈0.811 vs ≈0.836). Keeping ROIs to eyes+mouth and adding Target-ID improved totals while maintaining micro‑identity via ROI-ID at moderate λ.
+
+Behavior of new components
+- Target-ID (global IR-SE50):
+  - Applied ratio frequently ≈0.75 reflecting uniform sampling hitting ages 38–42 often; losses finite (~0.28–0.37) and stable in both stages; no NaNs/spikes observed.
+  - Stage-aware λ: stronger in S1 (0.10) and weaker in S2 (0.05) behaved as intended; S2 logs show persistent but smaller contribution.
+- Actor anchors (1‑year, S1 only):
+  - Loss magnitude tiny (as designed); anchor breadcrumbs present in opt; no adverse snapping; W‑norm progressed into high‑30s by late S1 similar to Fourteenth.
+
+One‑line summary
+- With Target‑ID toward real 40‑yo prototypes and 1‑year actor anchors (S1‑only), the Sixteenth training maintained stable convergence and low w_norm, matching strong identity/pixel/perceptual bands of prior best runs; S2 plateaued around ~0.811 (slightly above Eleventh/Tenth bests) while providing age‑40 identity steering without instability.
+
+Recommendations
+- If aiming to match Twelfth's lowest S2 totals (~0.8006), consider briefly disabling Target‑ID in late S2, or reduce λ_s2→0.03 while keeping λ_s1=0.10.
+- Keep 1‑year anchors S1‑only at λ=0.03; optionally sweep λ in [0.02,0.04] for sensitivity.
+- Early stop S2 at 45–50k if plateau persists; best snapshots clustered ~41–45k.
+- Maintain FAISS soft miner and EMA eval; continue logging `target_id_applied_ratio_real` and miner diagnostics for quick health checks.
+
+
+
+-------------------------------------
+Seventeenth Full Training (2-staged) — Dynamic ID ramp + aging guard
+-------------------------------------
+Goal: start Stage-1 with a moderate identity weight, then ramp identity up late while maintaining age fidelity. In Stage-2, fix both ID and aging lambdas to strong values. This uses the newly added per-step schedules for `id_lambda` and `aging_lambda`.
+
+Rationale:
+- Early training finds the age transform at safer ID strength.
+- Late Stage-1: ramp `id_lambda` to 0.45–0.50 while also maintaining/increasing `aging_lambda` to avoid regressing to older features.
+- Stage-2: lock `id_lambda`≈0.45 and `aging_lambda` strong (e.g., 5.0) for crisp identity without artifacts.
+
+Stage 1 — 0→40k (encoder+decoder; ID/aging schedules active)
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
+  conda activate mytimemachine && \
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_encoder \
+  --batch_size 2 --workers 2 \
+  --target_age uniform_random \
+  --max_steps 40000 --image_interval 100 \
+  --board_interval 50 --val_interval 500 --val_deterministic --val_max_batches 2 --val_start_step 2000 --val_disable_aging \
+  --id_lambda 0.30 --id_lambda_schedule_s1 '0:0.30,20000:0.40,36000:0.50' \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 \
+  --aging_lambda 5 --aging_lambda_schedule_s1 '0:5.0,30000:5.5,36000:6.0' \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard \
+  --extrapolation_start_step 1000000000 \
+  --nearest_neighbor_id_loss_lambda 0.10 \
+  --contrastive_id_lambda 0.04 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --roi_id_lambda 0.05 --roi_use_eyes --roi_use_mouth --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
+  --roi_id_schedule_s1 '0:0.05,20000:0.07,36000:0.05' \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --target_id_bank_path banks/actor40_ir.pt \
+  --target_id_lambda_s1 0.10 --target_id_apply_min_age 38 --target_id_apply_max_age 42 \
+  --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard | cat"
+```
+
+Stage 2 — 40k→55k (decoder-only; fixed strong ID and aging)
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
+  conda activate mytimemachine && \
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_decoder \
+  --batch_size 2 --workers 2 --test_batch_size 2 --test_workers 2 \
+  --target_age uniform_random \
+  --max_steps 55000 --learning_rate 3e-5 \
+  --id_lambda 0.30 --id_lambda_s2 0.45 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 \
+  --aging_lambda 5 --aging_lambda_s2 6.0 --aging_lambda_decoder_scale 0.5 \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard \
+  --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_40000.pt \
+  --nearest_neighbor_id_loss_lambda 0.05 \
+  --contrastive_id_lambda 0.02 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --roi_use_eyes --roi_use_mouth --roi_id_lambda_s2 0.05 --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --target_id_bank_path banks/actor40_ir.pt \
+  --target_id_lambda_s2 0.05 --target_id_apply_min_age 38 --target_id_apply_max_age 42 | cat"
+```
+
+Monitoring:
+- Expect `train/id_lambda_current` to traverse 0.30→0.40→0.50 around 0/20k/36k in S1.
+- Expect `train/aging_lambda_current` to stay high and rise near 30–36k as per schedule.
+- In S2, `id_lambda_current≈0.45`, `aging_lambda_current≈6.0` remain flat; EMA eval should be on.
+
+Seventeenth training (2-staged) — Dynamic ID ramp + aging guard — final report
+-------------------------------------
+Runs: S1 → 00064 (encoder+decoder, 0→40k), S2 → 00065 (decoder-only, 40k→55k)
+
+Setup recap (from opt.json)
+- Stage 1 (00064):
+  - ID schedule (new): id_lambda_schedule_s1 = 0:0.30 → 20k:0.40 → 36k:0.50
+  - Aging schedule (new): aging_lambda_schedule_s1 = 0:5.0 → 30k:5.5 → 36k:6.0
+  - Target-ID: bank=banks/actor40_ir.pt, λ_s1=0.10, ages [38,42]
+  - FAISS miner (custom): k=48, top_m=768, band [0.25,0.60], τ=0.12, ages [35,45]
+  - ROI-ID (eyes+mouth): roi_id_lambda=0.05 with mid-boost schedule 0:0.05 → 20k:0.07 → 36k:0.05
+  - Core regs: id_lambda base=0.3, lpips_crop=0.8, l2=0.1, w_norm=0.003, aging=5, cycle=1.5; EMA eval on; interpolation-only
+- Stage 2 (00065):
+  - Fixed ID: id_lambda_s2=0.45 (stronger than prior baselines)
+  - Fixed aging: aging_lambda_s2=6.0 (effective 3.0 with decoder scale 0.5)
+  - Target-ID: λ_s2=0.05; ROI-ID S2: roi_id_lambda_s2=0.05; EMA eval on; LR=3e-5
+
+Stage 1 (00064) — metrics and trends (timestamp.txt)
+- Early decay: loss 3.83 → ~1.80 @1k → ~1.24 @5k
+- Best windows (selected):
+  - 4.5k: total≈1.236; id≈0.354; lpips≈0.315; l2≈0.051; w_norm≈55.17
+  - 7.5k: total≈1.167; id≈0.331; lpips≈0.306; l2≈0.048; w_norm≈50.44
+  - 11.0k: total≈1.124; id≈0.318; lpips≈0.299; l2≈0.047; w_norm≈47.33
+  - 17.5k (best of S1): total≈1.094; id≈0.331; lpips≈0.291; l2≈0.051; w_norm≈42.40
+- Schedules evidenced in logs:
+  - ROI mid-boost active: roi_lambda_current=0.07 between ~20k→36k, then 0.05
+  - Aging schedule visible: effective_aging_lambda≈5.5 at 30k; ≈6.0 at 36k
+- Late S1 (30k→40k): totals ~1.15–1.24; identity head ~0.34±0.01; w_norm_real→~37.2 at 40k; plateau behavior
+- Miner diagnostics: prof=custom; k_effective=48; candidate_count shrinks (~28→~10–15) with training; mb_applied_ratio≈0.75 when in age window
+
+Stage 2 (00065) — metrics and trends (timestamp.txt)
+- Resume 40k from 00064; effective scales (decoder): w_norm≈0.0015, aging≈3.0
+- Best windows:
+  - 40k (start): total≈0.934
+  - 41–43k: totals ~0.929–0.925
+  - 47k: total≈0.924
+  - 51k (best of S2): total≈0.920 — id≈0.340; lpips≈0.293; l2≈0.053; w_norm≈37.58; EMA eval on
+  - 55k (final): total≈0.923 (plateau after ~47–51k)
+- Identity/perceptual/pixel heads remained tight and stable; w_norm_real stayed ~37–38 throughout
+- Miner: k_effective=48; mb_applied_ratio≈0.75; candidate_count ~11–13 mid/late; no instability
+
+Comparisons vs previous trainings
+- vs Eleventh/Tenth (EMA + ROI schedule; S2 best ≈0.807–0.809): Seventeenth S2 best ≈0.920 is higher (worse) in absolute total. Identity (loss_id_real≈0.339–0.346 late S2) and LPIPS/L2 ranges are similar, but stronger fixed λ (id_s2=0.45, aging_s2=6.0 → effective 3.0) likely increased totals.
+- vs Twelfth (soft‑0.60 miner; S2 best ≈0.8006): Seventeenth trails on total. W‑norm stability (~37–38) comparable. Higher fixed ID/aging emphasis likely trades total for stricter identity/age constraints.
+- vs Fourteenth/Sixteenth (anchors/target‑ID variants): Seventeenth omits anchors; uses strong ID/aging schedules. Totals plateau in similar bands as non‑anchor runs but above their best S2 windows.
+
+Behavior of new schedules
+- ID ramp (S1: 0.30→0.40→0.50): did not improve the identity head beyond ~0.33–0.35 late S1; best identity/pixel numbers occurred earlier (~11–18k) before the strongest ramp.
+- Aging ramp (S1: 5.0→5.5→6.0): kept aging signal strong; no reversion to “older” features was observed in logs; however, higher effective aging (and later strong ID) correlated with slightly higher totals late S1.
+- S2 fixed strong λ (id_s2=0.45, aging_s2=6.0): maintained identity/pixel stability but gave higher totals than prior best S2 runs.
+
+One‑line summary
+- The dynamic ID ramp with a late aging boost ran stably and preserved identity, but its stronger late constraints did not lower the identity head and led to higher absolute totals; S2 with fixed strong λs plateaued around ≈0.920.
+
+Recommendations
+- Soften late identity push: cap S1 ramp at 0.40 (not 0.50), start ramp later (e.g., 30k→36k only), or ramp more gradually (0.30→0.35→0.40).
+- Reduce S2 fixed λs: try id_lambda_s2=0.40 (or 0.35) and aging_lambda_s2=5.0 (effective 2.5), matching prior best‑total regimes.
+- Emphasize age fidelity without extra total cost: keep aging schedule peak at 5.5 (rather than 6.0), or rely on ROI schedule/Target‑ID to guard age during the S1 identity ramp.
+- Consider ROI‑ID mid‑boost + EMA (Eleventh style) combined with a milder ID ramp to focus micro‑identity while avoiding higher totals.
+- Early stop S2 around 47–51k where best totals clustered.

@@ -76,6 +76,16 @@ class TrainOptions:
         self.parser.add_argument('--cycle_lambda', default=0, type=float,
                                  help='Cycle loss multiplier factor')
 
+        # Step schedules for key losses (Stage-1) and fixed overrides for Stage-2
+        self.parser.add_argument('--id_lambda_schedule_s1', type=str, default=None,
+                                 help='Stage-1 schedule for ID lambda as "step:value,..." (e.g., "0:0.30,20000:0.40,40000:0.50").')
+        self.parser.add_argument('--id_lambda_s2', type=float, default=None,
+                                 help='Stage-2 fixed ID lambda; falls back to --id_lambda if unset.')
+        self.parser.add_argument('--aging_lambda_schedule_s1', type=str, default=None,
+                                 help='Stage-1 schedule for aging lambda as "step:value,...".')
+        self.parser.add_argument('--aging_lambda_s2', type=float, default=None,
+                                 help='Stage-2 fixed aging lambda; falls back to --aging_lambda if unset.')
+
         self.parser.add_argument('--lpips_lambda_crop', default=0, type=float,
                                  help='LPIPS loss multiplier factor for inner image region')
         self.parser.add_argument('--l2_lambda_crop', default=0, type=float,

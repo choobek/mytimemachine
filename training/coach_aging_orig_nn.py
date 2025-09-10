@@ -54,6 +54,21 @@ class Coach:
 		if not hasattr(self, 'aging_loss'):
 			self.aging_loss = AgingLoss(self.opts)
 
+		# ID/Aging lambda scheduling (Stage-aware)
+		self.id_lambda_base = float(getattr(self.opts, 'id_lambda', 0.0) or 0.0)
+		self.aging_lambda_base = float(getattr(self.opts, 'aging_lambda', 0.0) or 0.0)
+		self.cur_id_lambda = float(self.id_lambda_base)
+		self.cur_aging_lambda = float(self.aging_lambda_base)
+		self.id_lambda_s2 = getattr(self.opts, 'id_lambda_s2', None)
+		self.aging_lambda_s2 = getattr(self.opts, 'aging_lambda_s2', None)
+		try:
+			from training.utils.schedules import parse_step_schedule
+			self.id_s1_schedule = parse_step_schedule(getattr(self.opts, 'id_lambda_schedule_s1', None))
+			self.aging_s1_schedule = parse_step_schedule(getattr(self.opts, 'aging_lambda_schedule_s1', None))
+		except Exception:
+			self.id_s1_schedule = []
+			self.aging_s1_schedule = []
+
 		# Target-age ID guidance (Task 3)
 		self.target_id_bank = None
 		self.target_id_apply_min_age = int(getattr(self.opts, 'target_id_apply_min_age', 38) or 38)
@@ -376,6 +391,40 @@ class Coach:
 		# Build optional scheduler for stability
 		self.scheduler = self._build_scheduler(self.optimizer)
 
+	def _update_loss_lambdas_for_step(self):
+		stage1 = bool(getattr(self.opts, 'train_encoder', False))
+		stage2 = bool(getattr(self.opts, 'train_decoder', False)) and not stage1
+		# ID lambda
+		if stage1:
+			try:
+				from training.utils.schedules import value_for_step
+				val = value_for_step(self.id_s1_schedule, int(self.global_step))
+				self.cur_id_lambda = float(val) if val is not None else float(self.id_lambda_base)
+			except Exception:
+				self.cur_id_lambda = float(self.id_lambda_base)
+		elif stage2:
+			if self.id_lambda_s2 is not None:
+				self.cur_id_lambda = float(self.id_lambda_s2)
+			else:
+				self.cur_id_lambda = float(self.id_lambda_base)
+		else:
+			self.cur_id_lambda = float(self.id_lambda_base)
+		# Aging lambda
+		if stage1:
+			try:
+				from training.utils.schedules import value_for_step
+				val = value_for_step(self.aging_s1_schedule, int(self.global_step))
+				self.cur_aging_lambda = float(val) if val is not None else float(self.aging_lambda_base)
+			except Exception:
+				self.cur_aging_lambda = float(self.aging_lambda_base)
+		elif stage2:
+			if self.aging_lambda_s2 is not None:
+				self.cur_aging_lambda = float(self.aging_lambda_s2)
+			else:
+				self.cur_aging_lambda = float(self.aging_lambda_base)
+		else:
+			self.cur_aging_lambda = float(self.aging_lambda_base)
+
 	def _update_roi_lambda_for_step(self):
 		stage1 = bool(getattr(self.opts, 'train_encoder', False))
 		stage2 = bool(getattr(self.opts, 'train_decoder', False)) and not stage1
@@ -468,6 +517,8 @@ class Coach:
 
 				# Update ROI-ID lambda schedule each step
 				self._update_roi_lambda_for_step()
+				# Update ID/Aging lambdas schedule each step
+				self._update_loss_lambdas_for_step()
 
 				input_ages = self.aging_loss.extract_ages(x) / 100.
 
@@ -572,6 +623,8 @@ class Coach:
 					# Diagnostics
 					try:
 						self.logger.add_scalar("train/roi_id_lambda_current", float(self.cur_roi_lambda), self.global_step)
+						self.logger.add_scalar("train/id_lambda_current", float(self.cur_id_lambda), self.global_step)
+						self.logger.add_scalar("train/aging_lambda_current", float(self.cur_aging_lambda), self.global_step)
 						self.logger.add_scalar("train/ema_enabled", 1.0 if self.ema_enabled else 0.0, self.global_step)
 						self.logger.add_scalar("train/ema_decay", float(self.ema_decay) if self.ema_enabled else 0.0, self.global_step)
 					except Exception:
@@ -678,6 +731,8 @@ class Coach:
 				# Append breadcrumbs to loss_dict so timestamp.txt shows schedule & EMA info
 				try:
 					loss_dict['roi_lambda_current'] = float(self.cur_roi_lambda)
+					loss_dict['id_lambda_current'] = float(self.cur_id_lambda)
+					loss_dict['aging_lambda_current'] = float(self.cur_aging_lambda)
 					loss_dict['ema'] = 'on' if self.ema_enabled else 'off'
 					loss_dict['ema_scope'] = str(self.ema_scope)
 					loss_dict['ema_decay'] = float(self.ema_decay) if self.ema_enabled else 0.0
@@ -926,7 +981,7 @@ class Coach:
 		loss_dict = {}
 		id_logs = []
 		loss = 0.0
-		if self.opts.id_lambda > 0:
+		if self.opts.id_lambda > 0 or getattr(self, 'cur_id_lambda', 0.0) > 0.0:
 			weights = None
 			if self.opts.use_weighted_id_loss:  # compute weighted id loss only on forward pass
 				age_diffs = torch.abs(target_ages - input_ages)
@@ -934,7 +989,9 @@ class Coach:
 			loss_id, sim_improvement, id_logs = self.id_loss(y_hat, y, x, label=data_type, weights=weights)
 			loss_dict[f'loss_id_{data_type}'] = float(loss_id)
 			loss_dict[f'id_improve_{data_type}'] = float(sim_improvement)
-			loss = loss_id * self.opts.id_lambda
+			# Use scheduled ID lambda if available
+			lambda_id = float(getattr(self, 'cur_id_lambda', getattr(self.opts, 'id_lambda', 0.0)))
+			loss = loss_id * lambda_id
 		if self.opts.l2_lambda > 0:
 			loss_l2 = F.mse_loss(y_hat, y)
 			loss_dict[f'loss_l2_{data_type}'] = float(loss_l2)
@@ -962,7 +1019,8 @@ class Coach:
 		# decoder-phase scaled regularizers
 		decoder_phase = bool(getattr(self.opts, 'train_decoder', False)) and not bool(getattr(self.opts, 'train_encoder', False))
 		effective_w_norm_lambda = float(getattr(self.opts, 'w_norm_lambda', 0.0) or 0.0)
-		effective_aging_lambda = float(getattr(self.opts, 'aging_lambda', 0.0) or 0.0)
+		# Use scheduled aging lambda (with decoder-phase scaling handled below)
+		effective_aging_lambda = float(getattr(self, 'cur_aging_lambda', getattr(self.opts, 'aging_lambda', 0.0)) or 0.0)
 		if decoder_phase:
 			effective_w_norm_lambda *= float(getattr(self.opts, 'w_norm_lambda_decoder_scale', 1.0))
 			effective_aging_lambda *= float(getattr(self.opts, 'aging_lambda_decoder_scale', 1.0))
