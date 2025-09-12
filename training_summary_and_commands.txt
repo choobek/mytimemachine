@@ -6,6 +6,7 @@ training 00015 35000-step decoder-only resume
 bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && conda activate mytimemachine && PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py --dataset_type ffhq_aging --workers 2 --batch_size 2 --test_batch_size 2 --test_workers 2 --val_interval 500 --save_interval 1000 --start_from_encoded_w_plus --id_lambda 0.1 --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.6 --l2_lambda 0.25 --l2_lambda_aging 0.25 --l2_lambda_crop 1 --w_norm_lambda 0.005 --aging_lambda 5 --cycle_lambda 1 --input_nc 4 --target_age uniform_random --use_weighted_id_loss --checkpoint_path pretrained_models/sam_ffhq_aging.pt --train_dataset data/train --exp_dir experiments/full_training_run --adaptive_w_norm_lambda 7 --scheduler_type cosine --warmup_steps 500 --min_lr 1e-6 --grad_clip_norm 1.0 --nan_guard --resume_checkpoint experiments/full_training_run/00014/checkpoints/iteration_28000.pt --train_decoder --max_steps 35000 --learning_rate 0.0001"
 
 
+
 Second full training (~180 images dataset - before train/test split):
 -----------------------------
 Changes we did before next try:
@@ -1761,3 +1762,80 @@ Recommendations
 - Consider capping S1 id_lambda ramp at 0.40–0.45 to avoid late‑phase rigidity; current margin may already enforce adequate similarity.
 - If aiming for lower totals, revisit S2 fixed λs (e.g., id_lambda_s2=0.40, aging_lambda_s2=5.5) and monitor whether best window shifts earlier than 44k.
 - Continue soft miner profile with k=48, band [0.25,0.60]; the diagnostics show healthy semi-hard retrieval without over‑canonicalization.
+
+Nineteenth training (2-staged) — Broad “big-data” baseline — FAISS soft-0.60 + ROI-ID schedule + EMA
+-------------------------------------
+Why now: scales well with more identities/poses; maximizes general quality while keeping identity crisp. What’s new vs strong baselines: slightly longer Stage-1 for ~1k imgs, Twelfth-style soft miner, conservative losses, ROI-ID mid-boost, EMA.
+
+Stage-1 (0→40k, encoder+decoder)
+```
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
+  conda activate mytimemachine && \
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_encoder \
+  --batch_size 2 --workers 2 \
+  --target_age uniform_random \
+  --max_steps 40000 \
+  --id_lambda 0.3 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --nearest_neighbor_id_loss_lambda 0.10 \
+  --contrastive_id_lambda 0.04 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --extrapolation_start_step 1000000000 \
+  --roi_id_lambda 0.05 --roi_use_eyes --roi_use_mouth \
+  --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
+  --roi_id_schedule_s1 '0:0.05,20000:0.07,36000:0.05' \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --val_deterministic --val_max_batches 2 --val_interval 500 \
+  --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard | cat"
+```
+
+Stage-2 (resume 40k→55k, decoder-only)
+```
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
+  conda activate mytimemachine && \
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_decoder \
+  --batch_size 2 --workers 2 \
+  --target_age uniform_random \
+  --max_steps 55000 --learning_rate 3e-5 \
+  --id_lambda 0.3 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 \
+  --aging_lambda 5 --aging_lambda_decoder_scale 0.5 \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --nearest_neighbor_id_loss_lambda 0.05 \
+  --contrastive_id_lambda 0.02 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --roi_id_lambda_s2 0.05 --roi_use_eyes --roi_use_mouth \
+  --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --val_deterministic --val_max_batches 2 --val_interval 500 \
+  --warmup_steps 500 --min_lr 5e-7 \
+  --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_40000.pt | cat"
+```
+
+Notes:
+- Soft FAISS band keeps negatives semi-hard as diversity rises; k=48/top_m=768 works well at this scale.
+- ROI-ID mid-boost stabilizes micro-identity as the dataset gets more varied.
+- EMA gives clean, reproducible best snapshots.
+
+One‑liner
+- Broad big‑data baseline with FAISS soft‑0.60, ROI‑ID schedule, EMA; S1 0→40k, S2 40k→55k.
+
