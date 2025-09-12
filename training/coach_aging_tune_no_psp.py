@@ -627,6 +627,17 @@ class Coach:
 				loss_dict[f'loss_id_{data_type}'] = float(loss_id)
 				loss_dict[f'id_improve_{data_type}'] = float(sim_improvement)
 				loss += loss_id * self.opts.id_lambda
+				# Optional margin-based identity hinge: encourage cos(y_hat,y) >= m
+				if getattr(self.opts, 'id_margin_enabled', False) and float(getattr(self.opts, 'id_margin_lambda', 0.0) or 0.0) > 0:
+					y_feats = self.id_loss.extract_feats(y)
+					y_feats = F.normalize(y_feats, dim=1)
+					yhat_feats = self.id_loss.extract_feats(y_hat)
+					yhat_feats = F.normalize(yhat_feats, dim=1)
+					cos_sim = torch.sum(y_feats * yhat_feats, dim=1)
+					m = float(getattr(self.opts, 'id_margin_target', 0.90) or 0.90)
+					margin_loss = torch.clamp(m - cos_sim, min=0.0).mean()
+					loss = loss + float(self.opts.id_margin_lambda) * margin_loss
+					loss_dict[f'loss_id_margin_{data_type}'] = float(margin_loss)
 			if self.opts.l2_lambda > 0:
 				loss_l2 = F.mse_loss(y_hat, y)
 				loss_dict[f'loss_l2_{data_type}'] = float(loss_l2)

@@ -8,6 +8,10 @@ EXP_DIR_REL="experiments/full_training_run"
 EXP_DIR="$BASE_DIR/$EXP_DIR_REL"
 PYTHON_BIN="python"
 COACH="orig_nn"
+ID_MARGIN_ENABLED=1
+ID_MARGIN_TARGET=0.88
+ID_MARGIN_LAMBDA_S1=0.05
+ID_MARGIN_LAMBDA_S2=0.03
 
 # Shared hparams
 WORKERS=2
@@ -153,6 +157,7 @@ run_stage1_phase1() {
     --save_interval "$SAVE_INTERVAL" \
     --start_from_encoded_w_plus \
     --id_lambda "$ID_LAMBDA_S1" \
+    $( [[ "$ID_MARGIN_ENABLED" == "1" ]] && echo "--id_margin_enabled --id_margin_target $ID_MARGIN_TARGET --id_margin_lambda $ID_MARGIN_LAMBDA_S1" ) \
     --id_lambda_schedule_s1 "$ID_LAMBDA_S1_SCHEDULE" \
     --lpips_lambda "$LPIPS_LAMBDA_S1" \
     --lpips_lambda_aging "$LPIPS_LAMBDA_AGING_S1" \
@@ -238,6 +243,7 @@ run_stage1_phase2() {
     --save_interval "$SAVE_INTERVAL" \
     --start_from_encoded_w_plus \
     --id_lambda "$ID_LAMBDA_S1" \
+    $( [[ "$ID_MARGIN_ENABLED" == "1" ]] && echo "--id_margin_enabled --id_margin_target $ID_MARGIN_TARGET --id_margin_lambda $ID_MARGIN_LAMBDA_S1" ) \
     --lpips_lambda "$LPIPS_LAMBDA_S1" \
     --lpips_lambda_aging "$LPIPS_LAMBDA_AGING_S1" \
     --lpips_lambda_crop 0.9 \
@@ -292,6 +298,7 @@ run_stage1_phase3() {
     --save_interval "$SAVE_INTERVAL" \
     --start_from_encoded_w_plus \
     --id_lambda "$ID_LAMBDA_S1" \
+    $( [[ "$ID_MARGIN_ENABLED" == "1" ]] && echo "--id_margin_enabled --id_margin_target $ID_MARGIN_TARGET --id_margin_lambda $ID_MARGIN_LAMBDA_S1" ) \
     --lpips_lambda "$LPIPS_LAMBDA_S1" \
     --lpips_lambda_aging "$LPIPS_LAMBDA_AGING_S1" \
     --lpips_lambda_crop "$LPIPS_LAMBDA_CROP_S1" \
@@ -353,6 +360,7 @@ run_stage2() {
     --start_from_encoded_w_plus \
     --id_lambda "$ID_LAMBDA_S2" \
     --id_lambda_s2 "$ID_LAMBDA_S2_FIXED" \
+    $( [[ "$ID_MARGIN_ENABLED" == "1" ]] && echo "--id_margin_enabled --id_margin_target $ID_MARGIN_TARGET --id_margin_lambda $ID_MARGIN_LAMBDA_S2" ) \
     --lpips_lambda "$LPIPS_LAMBDA_S2" \
     --lpips_lambda_aging "$LPIPS_LAMBDA_AGING_S2" \
     --lpips_lambda_crop "$LPIPS_LAMBDA_CROP_S2" \

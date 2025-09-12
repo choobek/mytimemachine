@@ -67,6 +67,13 @@ class TrainOptions:
                                  help='LPIPS loss multiplier factor')
         self.parser.add_argument('--id_lambda', default=0, type=float,
                                  help='ID loss multiplier factor')
+        # Margin-based ID hinge (optional)
+        self.parser.add_argument('--id_margin_enabled', action='store_true',
+                                 help='Enable cosine similarity hinge target for identity (adds max(0, m - cos)).')
+        self.parser.add_argument('--id_margin_target', default=0.90, type=float,
+                                 help='Cosine similarity target m for hinge term (e.g., 0.85–0.92).')
+        self.parser.add_argument('--id_margin_lambda', default=0.0, type=float,
+                                 help='Weight for margin-based ID hinge loss; 0 disables.')
         self.parser.add_argument('--l2_lambda', default=0, type=float,
                                  help='L2 loss multiplier factor')
         self.parser.add_argument('--w_norm_lambda', default=0, type=float,

@@ -1611,7 +1611,7 @@ Comparisons vs previous trainings
 
 Behavior of new schedules
 - ID ramp (S1: 0.30→0.40→0.50): did not improve the identity head beyond ~0.33–0.35 late S1; best identity/pixel numbers occurred earlier (~11–18k) before the strongest ramp.
-- Aging ramp (S1: 5.0→5.5→6.0): kept aging signal strong; no reversion to “older” features was observed in logs; however, higher effective aging (and later strong ID) correlated with slightly higher totals late S1.
+- Aging ramp (S1: 5.0→5.5→6.0): kept aging signal strong; no reversion to "older" features was observed in logs; however, higher effective aging (and later strong ID) correlated with slightly higher totals late S1.
 - S2 fixed strong λ (id_s2=0.45, aging_s2=6.0): maintained identity/pixel stability but gave higher totals than prior best S2 runs.
 
 One‑line summary
@@ -1623,3 +1623,141 @@ Recommendations
 - Emphasize age fidelity without extra total cost: keep aging schedule peak at 5.5 (rather than 6.0), or rely on ROI schedule/Target‑ID to guard age during the S1 identity ramp.
 - Consider ROI‑ID mid‑boost + EMA (Eleventh style) combined with a milder ID ramp to focus micro‑identity while avoiding higher totals.
 - Early stop S2 around 47–51k where best totals clustered.
+
+
+Eighteenth training (2-staged) — Margin-based ID hinge + soft miner — plan and commands
+-------------------------------------
+Objective:
+- Add a margin-based identity hinge to enforce a minimum cosine similarity between output and target embeddings (IR‑SE50), complementing existing ID/aging/LPIPS/pixel, soft FAISS impostor, ROI‑ID, and schedules. Start conservatively and observe for any over‑constraint of age edits.
+
+Stage 1 — 0→40k (encoder; interpolation-only; margin hinge on)
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
+  conda activate mytimemachine && \
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_encoder \
+  --batch_size 2 --workers 2 --test_batch_size 2 --test_workers 2 \
+  --target_age uniform_random \
+  --max_steps 40000 --image_interval 100 \
+  --board_interval 50 --val_interval 500 --val_deterministic --val_max_batches 2 --val_start_step 2000 --val_disable_aging \
+  --id_lambda 0.30 --id_lambda_schedule_s1 '0:0.30,20000:0.40,36000:0.50' \
+  --id_margin_enabled --id_margin_target 0.88 --id_margin_lambda 0.05 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 \
+  --aging_lambda 5 --aging_lambda_schedule_s1 '0:5.0,30000:5.5,36000:6.0' \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard \
+  --extrapolation_start_step 1000000000 \
+  --nearest_neighbor_id_loss_lambda 0.10 \
+  --contrastive_id_lambda 0.04 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --roi_id_lambda 0.05 --roi_use_eyes --roi_use_mouth --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
+  --roi_id_schedule_s1 '0:0.05,20000:0.07,36000:0.05' \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --target_id_bank_path banks/actor40_ir.pt \
+  --target_id_lambda_s1 0.10 --target_id_apply_min_age 38 --target_id_apply_max_age 42 \
+  --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard | cat"
+```
+
+Stage 2 — 40k→55k (decoder-only; EMA eval; margin hinge lighter)
+```bash
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
+  conda activate mytimemachine && \
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_decoder \
+  --batch_size 2 --workers 2 --test_batch_size 2 --test_workers 2 \
+  --target_age uniform_random \
+  --max_steps 55000 --learning_rate 3e-5 \
+  --id_lambda 0.30 --id_lambda_s2 0.45 \
+  --id_margin_enabled --id_margin_target 0.88 --id_margin_lambda 0.03 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 \
+  --aging_lambda 5 --aging_lambda_s2 6.0 --aging_lambda_decoder_scale 0.5 \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --scheduler_type cosine --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard \
+  --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_40000.pt \
+  --nearest_neighbor_id_loss_lambda 0.05 \
+  --contrastive_id_lambda 0.02 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --roi_use_eyes --roi_use_mouth --roi_id_lambda_s2 0.05 --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --target_id_bank_path banks/actor40_ir.pt \
+  --target_id_lambda_s2 0.05 --target_id_apply_min_age 38 --target_id_apply_max_age 42 | cat"
+```
+
+Monitoring expectations:
+- Margin hinge metric appears as `loss_id_margin_real`/`cycle`; early S1 should show small positive values decreasing as ID improves. Identity head should trend slightly lower than comparable runs without margin, with aging and w_norm stable.
+
+Eighteenth training (2-staged) — Margin-based ID hinge + soft miner — final report
+-------------------------------------
+Runs: S1 → 00066 (encoder, 0→40k), S2 → 00067 (decoder-only, 40k→55k)
+
+Setup recap (from opt.json)
+- Stage 1 (00066):
+  - Margin ID hinge: enabled, margin_target=0.88, λ=0.05
+  - ID schedule: id_lambda_schedule_s1 = 0:0.30 → 20k:0.40 → 36k:0.50
+  - Aging schedule: aging_lambda_schedule_s1 = 0:5.0 → 30k:5.5 → 36k:6.0
+  - FAISS miner (soft band): k=48, top_m=768, band [0.25,0.60], τ=0.12, age window [35,45]
+  - ROI-ID: eyes+mouth, λ=0.05 with mid-boost 0:0.05 → 20k:0.07 → 36k:0.05
+  - Target-ID: bank=banks/actor40_ir.pt, λ_s1=0.10, ages [38,42]
+  - Core regs: lpips=0.1, lpips_crop=0.8, l2=0.1/0.25 crop/global, w_norm=0.003, aging=5, cycle=1.5
+  - EMA eval on; interpolation-only (extrapolation disabled)
+- Stage 2 (00067):
+  - Margin ID hinge: enabled, margin_target=0.88, λ=0.03
+  - Fixed ID/aging: id_lambda_s2=0.45, aging_lambda_s2=6.0; decoder scales: w_norm×0.5, aging×0.5
+  - FAISS miner soft band as S1; ROI-ID S2 λ=0.05; Target-ID λ_s2=0.05; EMA eval on; LR 3e-5
+
+Stage 1 (00066) — metrics and trends (timestamp.txt)
+- Early decay mirrors prior stable runs but with visible margin term:
+  - Examples of early bests: 2k→4.5k: totals 1.397→1.270; id≈0.37→0.34; lpips≈0.35→0.32; l2≈0.06→0.055
+- Mid-window improvements:
+  - 7.5k–12k: totals ≈1.198→1.156; id≈0.33→0.31; lpips≈0.31→0.30; w_norm_real ≈57→58→65 early, then trends down toward low‑40s later
+- Best S1 window (late teens):
+  - 19.5k (best in band): total≈1.094 (comparable to Seventeenth's 17.5k best 1.094)
+- Late S1 (30k→40k):
+  - With id ramp to 0.50 + margin enabled, identity head stabilizes around ~0.31–0.32, lpips ~0.30–0.31, l2 ~0.056–0.058; w_norm_real ≈38–39 at 40k
+  - Step 40k snapshot: id≈0.317; lpips≈0.307; l2≈0.058; w_norm≈38.0; loss_id_margin_real≈0.19–0.20
+- Miner diagnostics: prof=custom; k_effective=48; candidate_count shrinks from ~28 early to ~15±; sim_mean ≈0.26±0.01 late; applied_ratio≈0.75 in age window
+
+Stage 2 (00067) — metrics and trends (timestamp.txt)
+- Resume from 00066: effective decoder scales w_norm≈0.0015, aging≈3.0
+- Best windows and plateau behavior:
+  - 40k start: total≈0.934; improves to best ≈0.911 @44k; final 55k ≈0.917
+  - Identity head ranges ~0.31–0.32; lpips ~0.30–0.31; l2 ~0.056–0.059; margin term ~0.19–0.20
+- Miner in S2: k_effective=48; candidate_count ≈15–19; sim_mean ≈0.26; applied_ratio≈0.75; stable
+
+Comparisons vs previous trainings
+- vs Seventeenth S1 (best 1.094 @17.5k):
+  - Eighteenth S1 reaches a similar best (~1.094 @~19.5k). With margin hinge, identity head sits slightly lower earlier but late ramp + margin converges near ~0.31–0.32 similar to Seventeenth.
+- vs Seventeenth S2 (best ≈0.920 @51k):
+  - Eighteenth S2 improves the best window to ≈0.911 @44k (better total). Identity/lpips/l2 remain in tight bands; margin hinge likely nudged identity slightly while not harming totals.
+- vs Twelfth (soft miner) and earlier bests:
+  - The best Eighteenth S2 total (≈0.911) is still above the very best prior totals (~0.80x), but better than Seventeenth's ≈0.920 under stronger fixed λs. Margin hinge did not introduce instability and appears compatible with soft miner and EMA.
+
+Behavior of the margin hinge (loss_id_margin_real)
+- S1: early values high (0.24–0.30) and decrease as similarity improves; late S1 stabilizes ~0.19–0.20 at ramped ID.
+- S2: stays ~0.19–0.20 across best windows (44k–55k), indicating sustained high cosine similarity while allowing aging/perceptual changes.
+
+One‑line summary
+- The margin-based identity hinge preserved higher cosine similarity without destabilizing training and produced a better S2 best total (≈0.911) than Seventeenth's ≈0.920 under similar strong ID/aging constraints; S1 best matched prior best (~1.094). Overall identity fidelity slightly improved with minimal trade-off to perceptual/pixel heads.
+
+Recommendations
+- Keep margin_target=0.88; consider λ_s1=0.04 and λ_s2=0.02 to test if totals can drop further while retaining the identity gains.
+- Consider capping S1 id_lambda ramp at 0.40–0.45 to avoid late‑phase rigidity; current margin may already enforce adequate similarity.
+- If aiming for lower totals, revisit S2 fixed λs (e.g., id_lambda_s2=0.40, aging_lambda_s2=5.5) and monitor whether best window shifts earlier than 44k.
+- Continue soft miner profile with k=48, band [0.25,0.60]; the diagnostics show healthy semi-hard retrieval without over‑canonicalization.
