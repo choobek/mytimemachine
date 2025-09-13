@@ -77,7 +77,18 @@ EVAL_WITH_EMA=1
 ROI_S1_SCHEDULE="0:0.05,20000:0.07,36000:0.05"
 ROI_ID_LAMBDA_S2=0.05
 
-# No age anchors or target-ID guidance in this baseline
+# Age anchors (S1 only) and Target-ID guidance
+AGE_ANCHOR_PATH="anchors/actor_w_age1.pt"
+AGE_ANCHOR_ENABLE_S1=1
+AGE_ANCHOR_LAMBDA_S1=0.03
+AGE_ANCHOR_SPACE="w"
+AGE_ANCHOR_BIN_SIZE=1
+
+TARGET_ID_BANK_PATH="banks/actor40_ir.pt"
+TARGET_ID_APPLY_MIN_AGE=38
+TARGET_ID_APPLY_MAX_AGE=42
+TARGET_ID_LAMBDA_S1=0.10
+TARGET_ID_LAMBDA_S2=0.05
 
 # Stage 2 hparams (decoder-only fine-tune)
 ID_LAMBDA_S2=0.3
@@ -121,7 +132,7 @@ ensure_conda() {
 }
 
 run_stage1() {
-  log "Stage 1: 0 → ${MAX_STEPS_S1} (Big-data baseline: FAISS soft-0.60 + ROI-ID + EMA)"
+  log "Stage 1: 0 → ${MAX_STEPS_S1} (Age-40 targeted: 1y anchors + Target-ID + soft miner)"
   PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
   "$PYTHON_BIN" "$BASE_DIR/scripts/train.py" \
     --coach "$COACH" \
@@ -177,7 +188,15 @@ run_stage1() {
     --roi_jitter "$ROI_JITTER" \
     --roi_landmarks_model "$ROI_LANDMARKS_MODEL" \
     --roi_id_schedule_s1 "$ROI_S1_SCHEDULE" \
-    --target_id_lambda_s1 0.0 \
+    --age_anchor_path "$AGE_ANCHOR_PATH" \
+    --age_anchor_lambda "$AGE_ANCHOR_LAMBDA_S1" \
+    --age_anchor_stage s1 \
+    --age_anchor_space "$AGE_ANCHOR_SPACE" \
+    --age_anchor_bin_size "$AGE_ANCHOR_BIN_SIZE" \
+    --target_id_bank_path "$TARGET_ID_BANK_PATH" \
+    --target_id_apply_min_age "$TARGET_ID_APPLY_MIN_AGE" \
+    --target_id_apply_max_age "$TARGET_ID_APPLY_MAX_AGE" \
+    --target_id_lambda_s1 "$TARGET_ID_LAMBDA_S1" \
     \
     --seed 123 \
     $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
@@ -255,6 +274,9 @@ run_stage2() {
     --roi_pad "$ROI_PAD" \
     --roi_jitter "$ROI_JITTER" \
     --roi_landmarks_model "$ROI_LANDMARKS_MODEL" \
+    --target_id_bank_path "$TARGET_ID_BANK_PATH" \
+    --target_id_apply_min_age "$TARGET_ID_APPLY_MIN_AGE" \
+    --target_id_apply_max_age "$TARGET_ID_APPLY_MAX_AGE" \
     $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
     --ema_scope "$EMA_SCOPE" \
     --ema_decay "$EMA_DECAY" \
@@ -263,7 +285,7 @@ run_stage2() {
     --train_decoder \
     --max_steps "$MAX_STEPS_S2" \
     --learning_rate "$LEARNING_RATE_S2" \
-    --target_id_lambda_s2 0.0
+    --target_id_lambda_s2 "$TARGET_ID_LAMBDA_S2"
 }
 
 main() {

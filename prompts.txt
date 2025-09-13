@@ -1,0 +1,7 @@
+Tensorboard ufo41
+conda run -n mytimemachine tensorboard --logdir /home/wczub/RND/AI_DEAGING/repos/mytimemachine/experiments/full_training_run --port 6006 --host 0.0.0.0
+Tensorboard ufo29
+bash -lc "conda run -n tbboard tensorboard --logdir /home/wczub/RND/AI_DEAGING/repos/mytimemachine/experiments/full_training_run --port 6007 --host 0.0.0.0 | cat"
+
+Final report:
+The 19th full 2-staged (00074/00075) training has ended! I want you to read the experiments/full_training_run/000xx/opt.json, experiments/full_training_run/000xx/checkpoints/timestamp.txt, experiments/full_training_run/000xx/miner_profile.txt for both trainings and compare them to previous trainings (from training_summary_and_commands.txt). Finally prepare a thorough report about this training and add it to training_summary_and_commands.txt.
