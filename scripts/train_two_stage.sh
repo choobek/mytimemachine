@@ -39,7 +39,7 @@ ADAPTIVE_W_NORM_LAMBDA_S1=20
 EXTRAPOLATION_START_STEP_S1=1000000000
 NEAREST_NEIGHBOR_ID_LAMBDA_S1=0.1
 # Stage 1 duration (extended)
-MAX_STEPS_S1=40000
+MAX_STEPS_S1=45000
 
 # Contrastive impostor loss (FAISS miner)
 CONTRASTIVE_ID_LAMBDA_S1=0.04
@@ -72,6 +72,13 @@ EMA_ENABLE=1
 EMA_DECAY=0.999
 EMA_SCOPE="decoder"
 EVAL_WITH_EMA=1
+
+# Identity-Adversarial (ID-adv) discriminator config
+ID_ADV_LAMBDA=0.05
+ID_ADV_BACKEND="arcface"
+ID_ADV_INPUT_SIZE=112
+# Path to the trained actor-vs-all classifier (best checkpoint)
+ID_ADV_MODEL_PATH="$BASE_DIR/experiments/full_training_run/actor_classifier/run_20250913_114132/actor_classifier_best.pth"
 
 # ROI schedule controls (S1 schedule; S2 fixed)
 ROI_S1_SCHEDULE="0:0.05,20000:0.07,36000:0.05"
@@ -197,6 +204,10 @@ run_stage1() {
     --target_id_apply_min_age "$TARGET_ID_APPLY_MIN_AGE" \
     --target_id_apply_max_age "$TARGET_ID_APPLY_MAX_AGE" \
     --target_id_lambda_s1 "$TARGET_ID_LAMBDA_S1" \
+    --id_adv_lambda "$ID_ADV_LAMBDA" \
+    --id_adv_backend "$ID_ADV_BACKEND" \
+    --id_adv_input_size "$ID_ADV_INPUT_SIZE" \
+    --id_adv_model_path "$ID_ADV_MODEL_PATH" \
     \
     --seed 123 \
     $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
@@ -277,6 +288,10 @@ run_stage2() {
     --target_id_bank_path "$TARGET_ID_BANK_PATH" \
     --target_id_apply_min_age "$TARGET_ID_APPLY_MIN_AGE" \
     --target_id_apply_max_age "$TARGET_ID_APPLY_MAX_AGE" \
+    --id_adv_lambda "$ID_ADV_LAMBDA" \
+    --id_adv_backend "$ID_ADV_BACKEND" \
+    --id_adv_input_size "$ID_ADV_INPUT_SIZE" \
+    --id_adv_model_path "$ID_ADV_MODEL_PATH" \
     $( [[ "$EMA_ENABLE" == "1" ]] && echo "--ema" ) \
     --ema_scope "$EMA_SCOPE" \
     --ema_decay "$EMA_DECAY" \

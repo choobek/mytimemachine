@@ -83,6 +83,17 @@ class TrainOptions:
         self.parser.add_argument('--cycle_lambda', default=0, type=float,
                                  help='Cycle loss multiplier factor')
 
+        # Identity-adversarial loss (Task 4)
+        self.parser.add_argument('--id_adv_lambda', default=0.0, type=float,
+                                 help='Weight for identity-adversarial loss using frozen discriminator; 0 disables.')
+        self.parser.add_argument('--id_adv_model_path', default='', type=str,
+                                 help='Path to trained actor-vs-all classifier checkpoint (.pth with state_dict).')
+        self.parser.add_argument('--id_adv_backend', default='arcface', type=str,
+                                 choices=['arcface', 'resnet50', 'facenet'],
+                                 help='Backbone used by the classifier. Affects preprocessing and model loader.')
+        self.parser.add_argument('--id_adv_input_size', default=112, type=int,
+                                 help='Classifier input spatial size (typically 112 for ArcFace IR-SE50).')
+
         # Step schedules for key losses (Stage-1) and fixed overrides for Stage-2
         self.parser.add_argument('--id_lambda_schedule_s1', type=str, default=None,
                                  help='Stage-1 schedule for ID lambda as "step:value,..." (e.g., "0:0.30,20000:0.40,40000:0.50").')

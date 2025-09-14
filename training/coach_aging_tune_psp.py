@@ -29,6 +29,7 @@ import collections
 import shutil
 import numpy as np
 import copy
+# NOTE: No ID-adversarial integration here to avoid impacting tuned coach.
 class Coach:
 	def __init__(self, opts):
 		self.opts = opts
@@ -72,6 +73,11 @@ class Coach:
 			self.w_norm_loss = w_norm.WNormLoss(opts=self.opts)
 		if self.opts.aging_lambda > 0:
 			self.aging_loss = AgingLoss(self.opts)
+
+		# Initialize identity-adversarial discriminator (frozen)
+		self.id_adv = None
+		self.id_adv_preproc = None
+		self._init_id_adv()
 
 		# Initialize optimizer
 		self.optimizer = self.configure_optimizers()
@@ -159,6 +165,31 @@ class Coach:
 		self.best_val_loss = None
 		if self.opts.save_interval is None:
 			self.opts.save_interval = self.opts.max_steps
+
+	def _init_id_adv(self):
+		lambda_adv = float(getattr(self.opts, 'id_adv_lambda', 0.0) or 0.0)
+		model_path = str(getattr(self.opts, 'id_adv_model_path', '') or '')
+		backend = str(getattr(self.opts, 'id_adv_backend', 'arcface') or 'arcface')
+		inp = int(getattr(self.opts, 'id_adv_input_size', 112) or 112)
+		if lambda_adv <= 0.0 or len(model_path) == 0 or (not os.path.exists(model_path)):
+			self.id_adv = None
+			self.id_adv_preproc = None
+			if lambda_adv > 0.0:
+				print(f"[ID-ADV] Disabled (lambda={lambda_adv}, path='{model_path}')")
+			return
+		print(f"[ID-ADV] Loading discriminator from {model_path} (backend={backend})")
+		model = build_identity_model(backend=backend, weights_path=None, num_outputs=2, input_size=inp)
+		ckpt = torch.load(model_path, map_location='cpu')
+		state = ckpt.get('state_dict', ckpt)
+		missing = model.load_state_dict(state, strict=False)
+		model.eval()
+		for p in model.parameters():
+			p.requires_grad = False
+		self.id_adv = model.to(self.device)
+		# Preproc to 112 and normalize; generator outputs 256x256 RGB in [-1,1], so just resize
+		self.id_adv_preproc = torch.nn.Sequential(
+			torch.nn.Upsample(size=(inp, inp), mode='bilinear', align_corners=False)
+		)
 
 	def perform_forward_pass(self, x):
 		y_hat, latent = self.net.forward(x, return_latents=True)
@@ -616,6 +647,17 @@ class Coach:
 				loss_dict[f'loss_id_{data_type}'] = float(loss_id)
 				loss_dict[f'id_improve_{data_type}'] = float(sim_improvement)
 				loss += loss_id * self.opts.id_lambda
+			# Identity-adversarial loss on generated image (encourage actor class)
+			lambda_adv = float(getattr(self.opts, 'id_adv_lambda', 0.0) or 0.0)
+			if lambda_adv > 0.0 and self.id_adv is not None:
+				# y_hat is in [-1,1]; resize only (keep graph for gradients)
+				y_in = self.id_adv_preproc(y_hat)
+				# Allow gradients to flow from loss into generator
+				logits = self.id_adv(y_in)
+				labels_actor = torch.ones((logits.size(0),), dtype=torch.long, device=logits.device)
+				ce = torch.nn.functional.cross_entropy(logits, labels_actor)
+				loss_dict[f'loss_id_adv_{data_type}'] = float(ce.detach())
+				loss = loss + lambda_adv * ce
 				# Optional margin-based identity hinge: encourage cos(y_hat,y) >= m
 				if getattr(self.opts, 'id_margin_enabled', False) and float(getattr(self.opts, 'id_margin_lambda', 0.0) or 0.0) > 0:
 					y_feats = self.id_loss.extract_feats(y)

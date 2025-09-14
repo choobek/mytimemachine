@@ -60,8 +60,11 @@ def build_identity_model(
 	- 'facenet': InceptionResnetV1(pretrained='vggface2'), replace last linear with Linear(512, num_outputs)
 	"""
 	if backend == 'arcface':
-		assert weights_path is not None, 'ArcFace backend requires weights_path'
-		backbone = load_arcface_ir_se50_backbone(weights_path=weights_path, input_size=input_size, mode='ir_se')
+		if weights_path is not None:
+			backbone = load_arcface_ir_se50_backbone(weights_path=weights_path, input_size=input_size, mode='ir_se')
+		else:
+			# Construct backbone with random init; intended to be loaded from a full classifier checkpoint later
+			backbone = Backbone(input_size=input_size, num_layers=50, mode='ir_se')
 		model = IdentityClassifier(feature_extractor=backbone, num_outputs=num_outputs)
 		return model
 	elif backend == 'resnet50':

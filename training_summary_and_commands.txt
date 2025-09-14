@@ -1765,7 +1765,7 @@ Recommendations
 
 Nineteenth training (2-staged) — Broad “big-data” baseline — FAISS soft-0.60 + ROI-ID schedule + EMA
 -------------------------------------
-Why now: scales well with more identities/poses; maximizes general quality while keeping identity crisp. What’s new vs strong baselines: slightly longer Stage-1 for ~1k imgs, Twelfth-style soft miner, conservative losses, ROI-ID mid-boost, EMA.
+Why now: scales well with more identities/poses; maximizes general quality while keeping identity crisp. What's new vs strong baselines: slightly longer Stage-1 for ~1k imgs, Twelfth-style soft miner, conservative losses, ROI-ID mid-boost, EMA.
 
 Stage-1 (0→40k, encoder+decoder)
 ```
@@ -1876,7 +1876,7 @@ Stage 2 (00075) — metrics and trends (timestamp.txt)
 Comparisons vs previous trainings
 - vs Eighteenth S2 (best ≈0.911 @44k): Nineteenth improves to ≈0.859 (better total); heads remain tight: id≈0.33, lpips≈0.306, l2≈0.045; w_norm≈41 (slightly higher than some earlier S2s but stable)
 - vs Seventeenth S2 (best ≈0.920): clear improvement with the big‑data soft miner + ROI schedule
-- vs Twelfth S2 (best ≈0.8006): still above Twelfth’s very best, but significantly closer than Seventeenth/Eighteenth; soft‑0.60 miner remains effective at larger scale
+- vs Twelfth S2 (best ≈0.8006): still above Twelfth's very best, but significantly closer than Seventeenth/Eighteenth; soft‑0.60 miner remains effective at larger scale
 - S1 vs Eighteenth S1 (best ≈1.094): Nineteenth S1 best ≈1.135 trails slightly (dataset broadened; no margin hinge). However, the 40k handoff snapshot is strong and S2 recovers to the best overall two‑stage total so far under conservative losses.
 
 Visual inspection
@@ -1886,5 +1886,134 @@ Miner notes (miner_profile.txt)
 - Profile: "custom" for both 00074 and 00075; metrics from timestamp show consistent semi‑hard retrieval with the specified band and k
 
 One‑line summary
-- Big‑data FAISS soft‑0.60 + ROI‑ID + EMA scales to ~1k images: best S2 total ≈0.859 (better than Seventeenth/Eighteenth, shy of Twelfth’s best), with stable identity/perceptual/pixel heads and healthy miner diagnostics. Visually the best run so far.
+- Big‑data FAISS soft‑0.60 + ROI‑ID + EMA scales to ~1k images: best S2 total ≈0.859 (better than Seventeenth/Eighteenth, shy of Twelfth's best), with stable identity/perceptual/pixel heads and healthy miner diagnostics. Visually the best run so far.
 
+Twentieth training (2-staged) — Identity‑Adversarial (ID‑adv) guidance + FAISS soft‑0.60 + ROI‑ID + EMA
+-------------------------------------
+Why now: leverage the new actor‑vs‑all discriminator to directly push generator outputs toward the actor identity, while preserving the successful big‑data baseline (soft miner + ROI‑ID + EMA). This should improve actor resemblance without harming perceptual/pixel heads when weighted conservatively.
+
+Stage‑1 (0→40k, encoder+decoder)
+```
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
+  conda activate mytimemachine && \
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_encoder \
+  --batch_size 2 --workers 2 \
+  --target_age uniform_random \
+  --max_steps 40000 \
+  --id_lambda 0.3 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --nearest_neighbor_id_loss_lambda 0.10 \
+  --contrastive_id_lambda 0.04 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --extrapolation_start_step 1000000000 \
+  --roi_id_lambda 0.05 --roi_use_eyes --roi_use_mouth \
+  --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
+  --roi_id_schedule_s1 '0:0.05,20000:0.07,36000:0.05' \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --val_deterministic --val_max_batches 2 --val_interval 500 \
+  --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard \
+  --id_adv_lambda 0.05 \
+  --id_adv_backend arcface --id_adv_input_size 112 \
+  --id_adv_model_path experiments/full_training_run/actor_classifier/run_20250913_114132/actor_classifier_best.pth | cat"
+```
+
+Stage‑2 (resume 40k→55k, decoder‑only)
+```
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
+  conda activate mytimemachine && \
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_decoder \
+  --batch_size 2 --workers 2 \
+  --target_age uniform_random \
+  --max_steps 55000 --learning_rate 3e-5 \
+  --id_lambda 0.3 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 \
+  --aging_lambda 5 --aging_lambda_decoder_scale 0.5 \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --nearest_neighbor_id_loss_lambda 0.05 \
+  --contrastive_id_lambda 0.02 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --roi_id_lambda_s2 0.05 --roi_use_eyes --roi_use_mouth \
+  --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --val_deterministic --val_max_batches 2 --val_interval 500 \
+  --warmup_steps 500 --min_lr 5e-7 \
+  --id_adv_lambda 0.05 \
+  --id_adv_backend arcface --id_adv_input_size 112 \
+  --id_adv_model_path experiments/full_training_run/actor_classifier/run_20250913_114132/actor_classifier_best.pth \
+  --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_40000.pt | cat"
+```
+
+Monitoring expectations:
+- New metrics: `loss_id_adv_real` and `loss_id_adv_cycle` should appear and trend downward (not necessarily monotonically). A healthy run shows these stabilizing while core heads (id/lpips/l2) remain in prior bands.
+- Discriminator fooling: classifier confidence on generated images (actor class) increases across training; in practice, this manifests as decreasing `loss_id_adv_*`.
+- Compare totals vs Nineteenth: aim to match or improve S2 best (≈0.859) while improving perceived actor likeness.
+
+One‑line summary
+- Add a small ID‑adversarial push (λ_adv=0.05) using a frozen actor‑vs‑all classifier on top of the strong big‑data baseline; expect crisper actor identity with minimal trade‑offs.
+
+Twentieth training (2-staged) — ID‑Adversarial guidance on big‑data baseline (00078/00079)
+-------------------------------------
+Runs: S1 → 00078 (encoder, 0→45k), S2 → 00079 (decoder‑only, 45k→55k)
+
+Setup recap (from opt.json)
+- Coach: `orig_nn`, dataset `ffhq_aging`, train `data/train`, EMA on (decoder)
+- New: ID‑Adversarial classifier guidance enabled in both stages:
+  - `--id_adv_lambda 0.05`, backend=ArcFace, input_size=112
+  - Model: `experiments/full_training_run/actor_classifier/run_20250913_114132/actor_classifier_best.pth`
+- S1: id=0.3, lpips=0.1, lpips_crop=0.8, lpips_aging=0.1, l2=0.1/0.25/0.5, w_norm=0.003, aging=5.0, cycle=1.5, adaptive_w_norm=20
+  - FAISS (soft band): k=48, top_m=768, band [0.25, 0.60], τ=0.12, age window [35,45]
+  - ROI‑ID: eyes+mouth, S1 schedule 0:0.05 → 20k:0.07 → 36k:0.05
+  - Target‑ID: λ_s1=0.10, ages [38,42]
+  - Anchors (age=1y bins) enabled in 00078 (λ=0.03, space=W)
+  - Max steps: 45k (extended S1)
+- S2: resume 00079 @45k; lr=3e‑5; fixed λs; decoder scales w_norm×0.5, aging×0.5; ROI‑ID λ_s2=0.05; Target‑ID λ_s2=0.05; ID‑adv kept at 0.05.
+
+Stage 1 (00078) — metrics and trends (timestamp.txt)
+- Best windows improved steadily with extended S1; examples:
+  - 36.5k best ≈1.114; 39k best ≈1.100; 40k best ≈1.098
+- Representative late‑S1 snapshot:
+  - 40k: total≈1.098; id≈0.355; lpips≈0.312; l2≈0.049; w_norm≈38.63; id_adv_real≈0.0017
+- Miner diagnostics S1: custom; k_eff=48; candidate_count shrinks from ~18→10–15 by late S1; sim_mean ≈0.276–0.284; applied_ratio≈0.25; within expected semi‑hard band.
+
+Stage 2 (00079) — metrics and trends (timestamp.txt)
+- Resume header: 45k EMA snapshot total≈0.895 (improvement vs past S2 starts)
+- Best overall windows:
+  - 54k best ≈0.893 (id≈0.355, lpips≈0.312, l2≈0.049, w_norm≈38.45)
+  - 55k final ≈0.902–0.914 range across snapshots
+- ID‑adv metrics: `loss_id_adv_real` ~0.001–0.002 across S1/S2, indicating discriminator fooled/confident on actor class for generated images; stable throughout.
+- Miner S2: custom; k_eff=48; candidate_count ≈10–18; sim_mean ≈0.271–0.281; applied_ratio≈0.25; healthy semi‑hard negatives maintained.
+
+Comparisons vs previous trainings
+- vs Nineteenth S2 (best ≈0.859 @53k without ID‑adv): Twentieth best ≈0.893 is modestly higher (worse total) but maintains similar head balances; the added ID‑adv signal likely traded a small increase in total for improved actor likeness.
+- vs Nineteenth S1 best windows (~1.135 @23.5k): Twentieth late‑S1 bests ~1.098–1.100 at 39–40k; extended S1 helped converge further with ID‑adv present.
+- vs Eighteenth S2 (~0.911 @44k): Twentieth ≈0.893 improves upon Eighteenth's total while adding the ID‑adv constraint.
+- Qualitative expectation: ID‑adv should increase actor resemblance; numeric totals remain competitive with strong baselines.
+
+Behavior of the ID‑adv loss
+- `loss_id_adv_real/cycle` stayed around 0.001–0.002 late; consistent low values imply the discriminator assigns high actor probability to outputs, matching the training objective.
+- No signs of instability; other heads (identity, perceptual, pixel) remained in prior healthy bands.
+
+Visual inspection
+- It looks like identity preservation benefits from ID-adv and it is important to achieve more faithful character.20
+
+One‑line summary
+- With a small ID‑adversarial push and extended S1 (45k), the two‑stage run achieved best S2 total ≈0.893 (competitive vs prior strong runs), while maintaining stable miner/regularizer behavior. Expect improved perceived actor identity with minimal trade‑offs in totals.

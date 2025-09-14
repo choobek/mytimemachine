@@ -23,6 +23,7 @@ from models.psp import pSp
 from training.ranger import Ranger
 import math
 import copy
+from models.binary_identity_model import build_identity_model
 
 
 class Coach:
@@ -199,6 +200,11 @@ class Coach:
 		if self.opts.save_interval is None:
 			self.opts.save_interval = self.opts.max_steps
 		
+		# Initialize identity-adversarial discriminator (frozen)
+		self.id_adv = None
+		self.id_adv_preproc = None
+		self._init_id_adv()
+
 		# (moved) Load checkpoint happens after EMA helpers init so EMA can be restored
 		# Symlink convenience for latest phase3 directory
 		try:
@@ -1395,6 +1401,15 @@ class Coach:
 		# Ensure tensor scalar return for backward safety even if no losses active
 		if not torch.is_tensor(loss):
 			loss = torch.zeros((), device=y_hat.device, requires_grad=True)
+		# Identity-adversarial loss on generated image (encourage actor class)
+		lambda_adv = float(getattr(self.opts, 'id_adv_lambda', 0.0) or 0.0)
+		if lambda_adv > 0.0 and self.id_adv is not None:
+			y_in = self.id_adv_preproc(y_hat)
+			logits = self.id_adv(y_in)
+			labels_actor = torch.ones((logits.size(0),), dtype=torch.long, device=logits.device)
+			ce = torch.nn.functional.cross_entropy(logits, labels_actor)
+			loss_dict[f'loss_id_adv_{data_type}'] = float(ce.detach())
+			loss = loss + lambda_adv * ce
 		return loss, loss_dict, id_logs
 
 	def log_metrics(self, metrics_dict, prefix):
@@ -1561,5 +1576,29 @@ class Coach:
 			save_dict['ema_scope'] = str(self.ema_scope)
 			save_dict['ema_decay'] = float(self.ema_decay)
 		return save_dict
+
+	def _init_id_adv(self):
+		lambda_adv = float(getattr(self.opts, 'id_adv_lambda', 0.0) or 0.0)
+		model_path = str(getattr(self.opts, 'id_adv_model_path', '') or '')
+		backend = str(getattr(self.opts, 'id_adv_backend', 'arcface') or 'arcface')
+		inp = int(getattr(self.opts, 'id_adv_input_size', 112) or 112)
+		if lambda_adv <= 0.0 or len(model_path) == 0 or (not os.path.exists(model_path)):
+			self.id_adv = None
+			self.id_adv_preproc = None
+			if lambda_adv > 0.0:
+				print(f"[ID-ADV] Disabled (lambda={lambda_adv}, path='{model_path}')")
+			return
+		print(f"[ID-ADV] Loading discriminator from {model_path} (backend={backend})")
+		model = build_identity_model(backend=backend, weights_path=None, num_outputs=2, input_size=inp)
+		ckpt = torch.load(model_path, map_location='cpu')
+		state = ckpt.get('state_dict', ckpt)
+		model.load_state_dict(state, strict=False)
+		model.eval()
+		for p in model.parameters():
+			p.requires_grad = False
+		self.id_adv = model.to(self.device)
+		self.id_adv_preproc = torch.nn.Sequential(
+			torch.nn.Upsample(size=(inp, inp), mode='bilinear', align_corners=False)
+		)
 
 
