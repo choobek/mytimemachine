@@ -48,3 +48,4 @@ def test_tta_aggregator_math():
     expected = (clean + flip)/2.0 + 0.5*torch.min(jpeg, blur)
     assert torch.allclose(out, expected, atol=1e-8)
 
+

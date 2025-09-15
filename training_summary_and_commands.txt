@@ -2109,3 +2109,47 @@ Monitoring expectations:
 - New `idadv:` timestamp breadcrumbs each validation with lam/p/p_min/margin/γ/m/agg/views; EMA markers preserved.
 - `id_adv_p_actor_min_aug` ≤ `id_adv_p_actor_mean`; `id_adv_logit_margin` positive and trending up; FAISS `mb:` lines unchanged, `k_effective=48`.
 - S2 early-stop typically around 45–52k by totals; visually improved actor resemblance.
+
+Twenty-first training (2-staged) — ID‑Adversarial v2 final report (00090/00091)
+-------------------------------------
+Runs: S1 → 00090 (encoder, 0→50k), S2 → 00091 (decoder‑only, 50k→≈60k)
+
+Setup recap (from opt.json)
+- Coach/dataset: `orig_nn`, `ffhq_aging`; train `data/train`; EMA on (decoder)
+- Core regs: id=0.3, lpips=0.1, lpips_crop=0.8, lpips_aging=0.1, l2=0.1/0.25/0.5, w_norm=0.003, aging=5.0, cycle=1.5, adaptive_w_norm=20
+- Miner: FAISS soft band, k=48, top_m=768, band [0.25,0.60], τ=0.12, age window [35,45]
+- ROI‑ID: S1 schedule 0:0.05 → 20k:0.07 → 36k:0.05; S2 fixed λ=0.05
+- Target‑ID: bank `banks/actor40_ir.pt`, λ_s1=0.10, λ_s2=0.05
+- ID‑Adversarial v2:
+  - S1: enabled; schedule `id_adv_schedule_s1` = 0:0.03 → 20k:0.05 → 36k:0.08; focal γ=1.5; margin=0.15; TTA `clean,flip,jpeg75,blur0.6`; agg `mean(clean,flip)+0.5*min(jpeg75,blur0.6)`; conf weight `k=6,p_thr=0.9`; backend ArcFace(112)
+  - S2: enabled; fixed `id_adv_lambda=0.03` with same γ/margin/TTA/agg; conf weight disabled
+- Optim/schedule: ranger; cosine; warmup=500; min_lr=5e‑7; S2 lr=3e‑5; grad_clip_norm=1.0; nan_guard
+
+Stage 1 (00090) — metrics and trends (timestamp.txt)
+- Early decay typical of strong baselines; miner diagnostics present at each validation
+- End‑of‑S1 snapshot (50k, EMA): id≈0.320, lpips≈0.304, l2≈0.044; w_norm≈37.57
+- Miner S1: prof=custom; k_effective=48; candidate_count grew then settled ≈13–26; sim_mean ≈0.28±0.01; applied_ratio≈0.25 within band [0.25,0.60]
+
+Stage 2 (00091) — metrics and trends (timestamp.txt)
+- Resume header: 50k EMA snapshot ≈ id=0.320, lpips=0.304, l2=0.044
+- Best windows and plateau behavior (EMA):
+  - 52k: best≈0.838; 54k: best≈0.834; 55k: best≈0.825; 59k: best≈0.823 (overall best)
+  - Representative best@59k: id≈0.313, lpips≈0.300, l2≈0.043; w_norm≈37.12
+- Miner S2: prof=custom; k_effective=48 consistently; candidate_count ≈13–16; sim_mean ≈0.282–0.287; p75≈0.299–0.306; p90≈0.317–0.320; applied_ratio≈0.25 — stable semi‑hard negatives
+- EMA markers present (`used_ema=1`) throughout
+
+Comparisons vs previous trainings
+- Vs Twentieth (best ≈0.893): Twenty‑first improves substantially in total (best ≈0.823) with stronger ID‑adv v2 and robustness TTA/agg
+- Vs Nineteenth (best ≈0.859): Twenty‑first is better (lower total) while keeping miner/ROI stable
+- Vs Twelfth (best ≈0.8006): Twenty‑first is slightly higher on the numeric total, but closes much of the gap under the modernized setup and new ID‑adv v2
+- Vs Eighteenth (best ≈0.911): clear numeric improvement; miner k_effective=48 and band diagnostics remain unchanged
+
+Behavior of the upgraded ID‑adv
+- Multi‑view aggregation lowered variance across validations; margin hinge + focal CE behaved stably in tandem with the base losses
+- Confidence weighting was active only in S1 as planned; S2 used fixed λ_adv=0.03
+
+Visual inspection
+- Visually this run outperforms all previous runs: stronger actor resemblance and cleaner local details without harming age edits.
+
+One‑line summary
+- ID‑Adversarial v2 with focal, margin, multi‑view aggregation and confidence schedule delivered our best two‑stage totals to date under the new regime (best ≈0.823 @59k) with unchanged miner stability — and visually the strongest results so far.
