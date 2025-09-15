@@ -200,6 +200,20 @@ class Coach:
 		if self.opts.save_interval is None:
 			self.opts.save_interval = self.opts.max_steps
 		
+		# Identity-adversarial configuration (schedule + flags)
+		try:
+			from training.utils.schedules import parse_step_schedule
+			self.id_adv_s1_schedule = parse_step_schedule(getattr(self.opts, 'id_adv_schedule_s1', None))
+		except Exception:
+			self.id_adv_s1_schedule = []
+		self.id_adv_enabled = bool(getattr(self.opts, 'id_adv_enabled', False))
+		self.id_adv_gamma = float(getattr(self.opts, 'id_adv_focal_gamma', 0.0) or 0.0)
+		self.id_adv_margin = float(getattr(self.opts, 'id_adv_margin', 0.0) or 0.0)
+		self.id_adv_tta = [t.strip() for t in str(getattr(self.opts, 'id_adv_tta', 'clean') or 'clean').split(',') if len(t.strip()) > 0]
+		self.id_adv_agg = str(getattr(self.opts, 'id_adv_agg', 'mean(clean)') or 'mean(clean)')
+		from training.losses_idadv import parse_conf_weight_spec as _parse_cw
+		self.id_adv_conf = _parse_cw(getattr(self.opts, 'id_adv_conf_weight', ''))
+
 		# Initialize identity-adversarial discriminator (frozen)
 		self.id_adv = None
 		self.id_adv_preproc = None
@@ -694,6 +708,24 @@ class Coach:
 								pass
 							f.write(line + "\n")
 							f.write(miner_line + "\n")
+							# ID-ADV compact summary line (if metrics present)
+							try:
+								if isinstance(val_loss_dict, dict) and ('id_adv_lambda_current' in val_loss_dict):
+									lam = float(val_loss_dict.get('id_adv_lambda_current', 0.0))
+									p_mean = float(val_loss_dict.get('id_adv_p_actor_mean', 0.0))
+									p_min = float(val_loss_dict.get('id_adv_p_actor_min_aug', 0.0))
+									margin = float(val_loss_dict.get('id_adv_logit_margin', 0.0))
+									gamma = float(getattr(self, 'id_adv_gamma', getattr(self.opts, 'id_adv_focal_gamma', 0.0)) or 0.0)
+									m_h = float(getattr(self, 'id_adv_margin', getattr(self.opts, 'id_adv_margin', 0.0)) or 0.0)
+									views = ','.join(list(getattr(self, 'id_adv_tta', getattr(self.opts, 'id_adv_tta', 'clean')).split(',')))
+									expr = str(getattr(self, 'id_adv_agg', getattr(self.opts, 'id_adv_agg', 'mean(clean)')) or 'mean(clean)')
+									import re as _re
+									simple = _re.sub(r"mean\([^\)]*\)", "mean", expr)
+									simple = _re.sub(r"min\([^\)]*\)", "min", simple)
+									simple = simple.replace(" ", "")
+									f.write(f"idadv: lam={lam:.3f} p={p_mean:.3f} p_min={p_min:.3f} margin={margin:.3f} focalγ={gamma} m={m_h} views={views} agg={simple}\n")
+							except Exception:
+								pass
 						# Plateau hint: if total val loss hasn't improved in 1200 steps and loss_id_real hasn't improved in 800 steps
 						try:
 							no_val_improve = (self.global_step - getattr(self, '_last_best_val_step', 0)) >= 1200
@@ -1402,14 +1434,118 @@ class Coach:
 		if not torch.is_tensor(loss):
 			loss = torch.zeros((), device=y_hat.device, requires_grad=True)
 		# Identity-adversarial loss on generated image (encourage actor class)
-		lambda_adv = float(getattr(self.opts, 'id_adv_lambda', 0.0) or 0.0)
-		if lambda_adv > 0.0 and self.id_adv is not None:
-			y_in = self.id_adv_preproc(y_hat)
-			logits = self.id_adv(y_in)
-			labels_actor = torch.ones((logits.size(0),), dtype=torch.long, device=logits.device)
-			ce = torch.nn.functional.cross_entropy(logits, labels_actor)
-			loss_dict[f'loss_id_adv_{data_type}'] = float(ce.detach())
-			loss = loss + lambda_adv * ce
+		lambda_adv_base = float(getattr(self.opts, 'id_adv_lambda', 0.0) or 0.0)
+		if bool(getattr(self, 'id_adv_enabled', getattr(self.opts, 'id_adv_enabled', False))) and (getattr(self, 'id_adv', None) is not None) and (data_type == 'real') and bool(getattr(self.opts, 'train_encoder', False)):
+			# Ensure helper attributes exist (built in __init__ in this coach)
+			try:
+				from training.utils.schedules import value_for_step
+				lam_cur = value_for_step(getattr(self, 'id_adv_s1_schedule', []), int(self.global_step))
+			except Exception:
+				lam_cur = None
+			lam_cur = float(lam_cur) if lam_cur is not None else float(lambda_adv_base)
+			if lam_cur > 0.0:
+				# Preprocess and build TTA views
+				y_in = self.id_adv_preproc(y_hat)
+				views = []
+				name_list = [t.strip() for t in str(getattr(self.opts, 'id_adv_tta', 'clean') or 'clean').split(',') if len(t.strip())>0]
+				for name in name_list:
+					v = y_in
+					if name == 'clean':
+						pass
+					elif name == 'flip':
+						from models.binary_identity_model import tta_flip_horizontal
+						v = tta_flip_horizontal(v)
+					elif name.startswith('jpeg'):
+						from models.binary_identity_model import tta_jpeg75
+						v = tta_jpeg75(v)
+					elif name.startswith('blur'):
+						from models.binary_identity_model import tta_gaussian_blur
+						try:
+							sigma = float(name.split('blur',1)[1])
+						except Exception:
+							sigma = 0.6
+						v = tta_gaussian_blur(v, sigma=sigma)
+					else:
+						continue
+					views.append(v)
+				# Run classifier via wrapper
+				from models.binary_identity_model import IdentityModelWrapper
+				wrap = getattr(self, 'id_adv_wrap', None)
+				if wrap is None:
+					wrap = IdentityModelWrapper(self.id_adv)
+				out = wrap.forward_multi(views)
+				# Extract clean probs/logits and aggregates
+				p_clean = None
+				logits_clean = None
+				name_to_tensor = {}
+				idx = 0
+				for name in name_list:
+					if name not in ('clean','flip') and not name.startswith('jpeg') and not name.startswith('blur'):
+						continue
+					name_to_tensor[name] = out['probs'][idx][:, 1]
+					if name == 'clean':
+						p_clean = out['probs'][idx][:, 1]
+						logits_clean = out['logits'][idx]
+					idx += 1
+				if p_clean is None:
+					p_clean = out['probs'][0][:, 1]
+					logits_clean = out['logits'][0]
+				# Aggregate expression
+				import re
+				def eval_func(token: str):
+					token = token.strip()
+					if token.startswith('mean(') and token.endswith(')'):
+						inside = token[5:-1]
+						names = [t.strip() for t in inside.split(',') if t.strip()]
+						vals = [name_to_tensor[n] for n in names if n in name_to_tensor]
+						return torch.stack(vals, dim=0).mean(dim=0) if len(vals)>0 else p_clean
+					if token.startswith('min(') and token.endswith(')'):
+						inside = token[4:-1]
+						names = [t.strip() for t in inside.split(',') if t.strip()]
+						vals = [name_to_tensor[n] for n in names if n in name_to_tensor]
+						return (torch.stack(vals, dim=0).min(dim=0).values) if len(vals)>0 else p_clean
+					return name_to_tensor.get(token, p_clean)
+				expr = str(getattr(self.opts, 'id_adv_agg', 'mean(clean)') or 'mean(clean)')
+				sum_vec = torch.zeros_like(p_clean)
+				for part in expr.split('+'):
+					part = part.strip()
+					m = re.match(r"^([0-9\.]+)\s*\*\s*(.+)$", part)
+					if m:
+						scale = float(m.group(1))
+						func = m.group(2).strip()
+						val = eval_func(func)
+						sum_vec = sum_vec + scale * val
+					else:
+						val = eval_func(part)
+						sum_vec = sum_vec + val
+				p_actor_mean = sum_vec
+				aug_names = [n for n in name_list if n != 'clean']
+				if len(aug_names) > 0:
+					vals = [name_to_tensor[n] for n in aug_names if n in name_to_tensor]
+					p_actor_min_aug = (torch.stack(vals, dim=0).min(dim=0).values) if len(vals)>0 else p_clean
+				else:
+					p_actor_min_aug = p_clean
+				# Compute losses
+				from training.losses_idadv import focal_ce, logit_margin_hinge, conf_weight
+				gamma = float(getattr(self.opts, 'id_adv_focal_gamma', 0.0) or 0.0)
+				margin = float(getattr(self.opts, 'id_adv_margin', 0.0) or 0.0)
+				labels_actor = torch.ones((logits_clean.size(0),), dtype=torch.long, device=logits_clean.device)
+				ce_vec = focal_ce(logits_clean, labels_actor, gamma=gamma, reduction='none')
+				margin_vec = logit_margin_hinge(logits_clean[:,1], logits_clean[:,0], margin=margin, reduction='none')
+				combined = 0.8 * ce_vec + 0.2 * margin_vec
+				from training.losses_idadv import parse_conf_weight_spec
+				cw = parse_conf_weight_spec(getattr(self.opts, 'id_adv_conf_weight', ''))
+				if cw is not None:
+					k, p_thr = cw
+					w = conf_weight(p_clean, k=k, p_thr=p_thr)
+					combined = combined * w
+				L_adv = combined.mean()
+				loss = loss + lam_cur * L_adv
+				# Log into loss_dict for timestamp
+				loss_dict['id_adv_lambda_current'] = float(lam_cur)
+				loss_dict['id_adv_p_actor_mean'] = float(p_actor_mean.mean().item())
+				loss_dict['id_adv_p_actor_min_aug'] = float(p_actor_min_aug.mean().item())
+				loss_dict['id_adv_logit_margin'] = float((logits_clean[:,1] - logits_clean[:,0]).mean().item())
 		return loss, loss_dict, id_logs
 
 	def log_metrics(self, metrics_dict, prefix):
@@ -1578,15 +1714,13 @@ class Coach:
 		return save_dict
 
 	def _init_id_adv(self):
-		lambda_adv = float(getattr(self.opts, 'id_adv_lambda', 0.0) or 0.0)
 		model_path = str(getattr(self.opts, 'id_adv_model_path', '') or '')
 		backend = str(getattr(self.opts, 'id_adv_backend', 'arcface') or 'arcface')
 		inp = int(getattr(self.opts, 'id_adv_input_size', 112) or 112)
-		if lambda_adv <= 0.0 or len(model_path) == 0 or (not os.path.exists(model_path)):
+		# Load model if feature enabled and path exists, regardless of base lambda (schedule may drive lambda)
+		if (not bool(getattr(self, 'id_adv_enabled', getattr(self.opts, 'id_adv_enabled', False)))) or len(model_path) == 0 or (not os.path.exists(model_path)):
 			self.id_adv = None
 			self.id_adv_preproc = None
-			if lambda_adv > 0.0:
-				print(f"[ID-ADV] Disabled (lambda={lambda_adv}, path='{model_path}')")
 			return
 		print(f"[ID-ADV] Loading discriminator from {model_path} (backend={backend})")
 		model = build_identity_model(backend=backend, weights_path=None, num_outputs=2, input_size=inp)

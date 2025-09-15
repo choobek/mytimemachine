@@ -2017,3 +2017,95 @@ Visual inspection
 
 One‑line summary
 - With a small ID‑adversarial push and extended S1 (45k), the two‑stage run achieved best S2 total ≈0.893 (competitive vs prior strong runs), while maintaining stable miner/regularizer behavior. Expect improved perceived actor identity with minimal trade‑offs in totals.
+
+
+Twenty-first training (2-staged) — ID‑Adversarial v2: focal CE + margin + multi‑view + confidence weighting
+-------------------------------------
+Why now: enable the upgraded ID‑adv guidance behind feature flags to improve actor resemblance while maintaining stability of the proven big‑data baseline (FAISS soft‑0.60 + ROI‑ID + EMA). All features are backward compatible and disabled by default.
+
+Stage‑1 (0→50k, encoder+decoder; scheduled λ_adv with focal γ, margin, TTA, aggregator, confidence)
+```
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
+  conda activate mytimemachine && \
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_encoder \
+  --batch_size 2 --workers 2 \
+  --target_age uniform_random \
+  --max_steps 50000 \
+  --id_lambda 0.3 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --aging_lambda 5 --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --nearest_neighbor_id_loss_lambda 0.10 \
+  --contrastive_id_lambda 0.04 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --roi_id_lambda 0.05 --roi_use_eyes --roi_use_mouth \
+  --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --roi_landmarks_model pretrained_models/shape_predictor_68_face_landmarks.dat \
+  --roi_id_schedule_s1 '0:0.05,20000:0.07,36000:0.05' \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --val_deterministic --val_max_batches 2 --val_interval 500 \
+  --warmup_steps 500 --min_lr 5e-7 --grad_clip_norm 1.0 --nan_guard \
+  \
+  --id_adv_enabled \
+  --id_adv_backend arcface --id_adv_input_size 112 \
+  --id_adv_model_path experiments/full_training_run/actor_classifier/run_20250913_114132/actor_classifier_best.pth \
+  --id_adv_focal_gamma 1.5 \
+  --id_adv_margin 0.15 \
+  --id_adv_tta "clean,flip,jpeg75,blur0.6" \
+  --id_adv_agg "mean(clean,flip)+0.5*min(jpeg75,blur0.6)" \
+  --id_adv_schedule_s1 "0:0.03,20000:0.05,36000:0.08" \
+  --id_adv_conf_weight k=6,p_thr=0.9 | cat"
+```
+
+Stage‑2 (resume best‑of‑S1, 45–52k early‑stop window; decoder‑only; fixed λ_adv)
+```
+bash -lc "cd /home/wczub/RND/AI_DEAGING/repos/mytimemachine && \
+  conda activate mytimemachine && \
+  PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python scripts/train.py \
+  --coach orig_nn \
+  --dataset_type ffhq_aging --train_dataset data/train \
+  --exp_dir experiments/full_training_run \
+  --start_from_encoded_w_plus --train_decoder \
+  --batch_size 2 --workers 2 \
+  --target_age uniform_random \
+  --max_steps 52000 --learning_rate 3e-5 \
+  --id_lambda 0.3 \
+  --lpips_lambda 0.1 --lpips_lambda_aging 0.1 --lpips_lambda_crop 0.8 \
+  --l2_lambda 0.1 --l2_lambda_aging 0.25 --l2_lambda_crop 0.5 \
+  --w_norm_lambda 0.003 --w_norm_lambda_decoder_scale 0.5 \
+  --aging_lambda 5 --aging_lambda_decoder_scale 0.5 \
+  --cycle_lambda 1.5 \
+  --adaptive_w_norm_lambda 20 \
+  --nearest_neighbor_id_loss_lambda 0.05 \
+  --contrastive_id_lambda 0.02 \
+  --mb_index_path banks/ffhq_ir50_age_5y.pt --mb_use_faiss \
+  --mb_top_m 768 --mb_k 48 --mb_min_sim 0.25 --mb_max_sim 0.60 \
+  --mb_apply_min_age 35 --mb_apply_max_age 45 --mb_temperature 0.12 \
+  --roi_id_lambda_s2 0.05 --roi_use_eyes --roi_use_mouth \
+  --roi_size 112 --roi_pad 0.35 --roi_jitter 0.06 \
+  --ema --ema_scope decoder --ema_decay 0.999 --eval_with_ema \
+  --val_deterministic --val_max_batches 2 --val_interval 500 \
+  --warmup_steps 500 --min_lr 5e-7 \
+  \
+  --id_adv_enabled \
+  --id_adv_backend arcface --id_adv_input_size 112 \
+  --id_adv_model_path experiments/full_training_run/actor_classifier/run_20250913_114132/actor_classifier_best.pth \
+  --id_adv_lambda 0.03 \
+  --id_adv_focal_gamma 1.5 \
+  --id_adv_margin 0.15 \
+  --id_adv_tta "clean,flip,jpeg75,blur0.6" /\
+  --id_adv_agg "mean(clean,flip)+0.5*min(jpeg75,blur0.6)" \
+  --resume_checkpoint experiments/full_training_run/000XX/checkpoints/iteration_50000.pt | cat"
+```
+
+Monitoring expectations:
+- New `idadv:` timestamp breadcrumbs each validation with lam/p/p_min/margin/γ/m/agg/views; EMA markers preserved.
+- `id_adv_p_actor_min_aug` ≤ `id_adv_p_actor_mean`; `id_adv_logit_margin` positive and trending up; FAISS `mb:` lines unchanged, `k_effective=48`.
+- S2 early-stop typically around 45–52k by totals; visually improved actor resemblance.

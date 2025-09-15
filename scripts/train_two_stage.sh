@@ -39,7 +39,7 @@ ADAPTIVE_W_NORM_LAMBDA_S1=20
 EXTRAPOLATION_START_STEP_S1=1000000000
 NEAREST_NEIGHBOR_ID_LAMBDA_S1=0.1
 # Stage 1 duration (extended)
-MAX_STEPS_S1=45000
+MAX_STEPS_S1=50000
 
 # Contrastive impostor loss (FAISS miner)
 CONTRASTIVE_ID_LAMBDA_S1=0.04
@@ -74,7 +74,7 @@ EMA_SCOPE="decoder"
 EVAL_WITH_EMA=1
 
 # Identity-Adversarial (ID-adv) discriminator config
-ID_ADV_LAMBDA=0.05
+ID_ADV_LAMBDA=0.03
 ID_ADV_BACKEND="arcface"
 ID_ADV_INPUT_SIZE=112
 # Path to the trained actor-vs-all classifier (best checkpoint)
@@ -204,7 +204,13 @@ run_stage1() {
     --target_id_apply_min_age "$TARGET_ID_APPLY_MIN_AGE" \
     --target_id_apply_max_age "$TARGET_ID_APPLY_MAX_AGE" \
     --target_id_lambda_s1 "$TARGET_ID_LAMBDA_S1" \
-    --id_adv_lambda "$ID_ADV_LAMBDA" \
+    --id_adv_enabled \
+    --id_adv_focal_gamma 1.5 \
+    --id_adv_margin 0.15 \
+    --id_adv_tta "clean,flip,jpeg75,blur0.6" \
+    --id_adv_agg "mean(clean,flip)+0.5*min(jpeg75,blur0.6)" \
+    --id_adv_schedule_s1 "0:0.03,20000:0.05,36000:0.08" \
+    --id_adv_conf_weight k=6,p_thr=0.9 \
     --id_adv_backend "$ID_ADV_BACKEND" \
     --id_adv_input_size "$ID_ADV_INPUT_SIZE" \
     --id_adv_model_path "$ID_ADV_MODEL_PATH" \
@@ -288,7 +294,12 @@ run_stage2() {
     --target_id_bank_path "$TARGET_ID_BANK_PATH" \
     --target_id_apply_min_age "$TARGET_ID_APPLY_MIN_AGE" \
     --target_id_apply_max_age "$TARGET_ID_APPLY_MAX_AGE" \
+    --id_adv_enabled \
     --id_adv_lambda "$ID_ADV_LAMBDA" \
+    --id_adv_focal_gamma 1.5 \
+    --id_adv_margin 0.15 \
+    --id_adv_tta "clean,flip,jpeg75,blur0.6" \
+    --id_adv_agg "mean(clean,flip)+0.5*min(jpeg75,blur0.6)" \
     --id_adv_backend "$ID_ADV_BACKEND" \
     --id_adv_input_size "$ID_ADV_INPUT_SIZE" \
     --id_adv_model_path "$ID_ADV_MODEL_PATH" \

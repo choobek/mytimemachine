@@ -21,7 +21,8 @@ from models.psp import pSp
 from training.ranger import Ranger
 import math
 import copy
-from models.binary_identity_model import build_identity_model
+from models.binary_identity_model import build_identity_model, IdentityModelWrapper, tta_flip_horizontal, tta_jpeg75, tta_gaussian_blur
+from training.losses_idadv import focal_ce, logit_margin_hinge, conf_weight, parse_conf_weight_spec
 
 
 class Coach:
@@ -136,6 +137,18 @@ class Coach:
 		self.id_adv = None
 		self.id_adv_preproc = None
 		self._init_id_adv()
+		# Parse ID-adv schedule and config (no-op unless enabled)
+		try:
+			from training.utils.schedules import parse_step_schedule
+			self.id_adv_s1_schedule = parse_step_schedule(getattr(self.opts, 'id_adv_schedule_s1', None))
+		except Exception:
+			self.id_adv_s1_schedule = []
+		self.id_adv_enabled = bool(getattr(self.opts, 'id_adv_enabled', False))
+		self.id_adv_gamma = float(getattr(self.opts, 'id_adv_focal_gamma', 0.0) or 0.0)
+		self.id_adv_margin = float(getattr(self.opts, 'id_adv_margin', 0.0) or 0.0)
+		self.id_adv_tta = [t.strip() for t in str(getattr(self.opts, 'id_adv_tta', 'clean') or 'clean').split(',') if len(t.strip()) > 0]
+		self.id_adv_agg = str(getattr(self.opts, 'id_adv_agg', 'mean(clean)') or 'mean(clean)')
+		self.id_adv_conf = parse_conf_weight_spec(getattr(self.opts, 'id_adv_conf_weight', ''))
 
 		# Load checkpoint if resuming
 		if hasattr(opts, 'resume_checkpoint') and opts.resume_checkpoint:
@@ -233,6 +246,7 @@ class Coach:
 		self.id_adv_preproc = torch.nn.Sequential(
 			torch.nn.Upsample(size=(inp, inp), mode='bilinear', align_corners=False)
 		)
+		self.id_adv_wrap = IdentityModelWrapper(self.id_adv)
 
 	def perform_forward_pass(self, x):
 		y_hat, latent = self.net.forward(x, return_latents=True)
@@ -607,14 +621,129 @@ class Coach:
 			lambda_id = float(getattr(self, 'cur_id_lambda', getattr(self.opts, 'id_lambda', 0.0)))
 			loss = loss_id * lambda_id
 		# Identity-adversarial loss on generated image (encourage actor class)
-		lambda_adv = float(getattr(self.opts, 'id_adv_lambda', 0.0) or 0.0)
-		if lambda_adv > 0.0 and self.id_adv is not None:
-			y_in = self.id_adv_preproc(y_hat)
-			logits = self.id_adv(y_in)
-			labels_actor = torch.ones((logits.size(0),), dtype=torch.long, device=logits.device)
-			ce = torch.nn.functional.cross_entropy(logits, labels_actor)
-			loss_dict[f'loss_id_adv_{data_type}'] = float(ce.detach())
-			loss = loss + lambda_adv * ce
+		lambda_adv_base = float(getattr(self.opts, 'id_adv_lambda', 0.0) or 0.0)
+		if bool(self.id_adv_enabled) and (self.id_adv is not None) and (data_type == 'real') and bool(getattr(self.opts, 'train_encoder', False)):
+			# Current scheduled lambda
+			try:
+				from training.utils.schedules import value_for_step
+				lam_cur = value_for_step(self.id_adv_s1_schedule, int(self.global_step))
+			except Exception:
+				lam_cur = None
+			lam_cur = float(lam_cur) if lam_cur is not None else float(lambda_adv_base)
+			if lam_cur > 0.0:
+				# Build TTA views
+				y_in = self.id_adv_preproc(y_hat)
+				views = []
+				pmap = {}
+				for name in self.id_adv_tta:
+					v = y_in
+					if name == 'clean':
+						pass
+					elif name == 'flip':
+						v = tta_flip_horizontal(v)
+					elif name.startswith('jpeg'):
+						v = tta_jpeg75(v)
+					elif name.startswith('blur'):
+						try:
+							sigma = float(name.split('blur',1)[1])
+						except Exception:
+							sigma = 0.6
+						v = tta_gaussian_blur(v, sigma=sigma)
+					else:
+						# Unknown token: skip
+						continue
+					views.append(v)
+				# Run classifier
+				out = self.id_adv_wrap.forward_multi(views)
+				# Map names to actor probs/logits in same order
+				idx = 0
+				p_clean = None
+				p_list = []
+				logits_clean = None
+				for name in self.id_adv_tta:
+					if name not in ('clean','flip') and not name.startswith('jpeg') and not name.startswith('blur'):
+						continue
+					probs = out['probs'][idx]
+					logits_v = out['logits'][idx]
+					p_actor = probs[:, 1]
+					p_list.append(p_actor)
+					if name == 'clean':
+						p_clean = p_actor
+						logits_clean = logits_v
+					idx += 1
+				if p_clean is None:
+					p_clean = p_list[0]
+					logits_clean = out['logits'][0]
+				# Aggregate expression (support mean(...) and min(...), plus sums like A+0.5*B)
+				name_to_tensor = {}
+				# Prepare named tensors
+				idx = 0
+				for name in self.id_adv_tta:
+					if name not in ('clean','flip') and not name.startswith('jpeg') and not name.startswith('blur'):
+						continue
+					name_to_tensor[name] = out['probs'][idx][:, 1]
+					idx += 1
+				import re
+				def eval_func(token: str):
+					token = token.strip()
+					if token.startswith('mean(') and token.endswith(')'):
+						inside = token[5:-1]
+						names = [t.strip() for t in inside.split(',') if t.strip()]
+						vals = [name_to_tensor[n] for n in names if n in name_to_tensor]
+						return torch.stack(vals, dim=0).mean(dim=0) if len(vals)>0 else p_clean
+					if token.startswith('min(') and token.endswith(')'):
+						inside = token[4:-1]
+						names = [t.strip() for t in inside.split(',') if t.strip()]
+						vals = [name_to_tensor[n] for n in names if n in name_to_tensor]
+						return (torch.stack(vals, dim=0).min(dim=0).values) if len(vals)>0 else p_clean
+					# Fallback: single name
+					return name_to_tensor.get(token, p_clean)
+				# sum of terms a*func + b*func2 ...
+				expr = self.id_adv_agg
+				sum_vec = torch.zeros_like(p_clean)
+				for part in expr.split('+'):
+					part = part.strip()
+					m = re.match(r"^([0-9\.]+)\s*\*\s*(.+)$", part)
+					if m:
+						scale = float(m.group(1))
+						func = m.group(2).strip()
+						val = eval_func(func)
+						sum_vec = sum_vec + scale * val
+					else:
+						val = eval_func(part)
+						sum_vec = sum_vec + val
+				p_actor_mean = sum_vec
+				# Min over non-clean augs for logging
+				aug_names = [n for n in self.id_adv_tta if n != 'clean']
+				if len(aug_names) > 0:
+					vals = [name_to_tensor[n] for n in aug_names if n in name_to_tensor]
+					p_actor_min_aug = (torch.stack(vals, dim=0).min(dim=0).values) if len(vals)>0 else p_clean
+				else:
+					p_actor_min_aug = p_clean
+				# Compute CE (focal) and margin hinge on clean logits
+				labels_actor = torch.ones((logits_clean.size(0),), dtype=torch.long, device=logits_clean.device)
+				ce_vec = focal_ce(logits_clean, labels_actor, gamma=self.id_adv_gamma, reduction='none')
+				margin_vec = logit_margin_hinge(logits_clean[:,1], logits_clean[:,0], margin=self.id_adv_margin, reduction='none')
+				combined = 0.8 * ce_vec + 0.2 * margin_vec
+				if self.id_adv_conf is not None:
+					k, p_thr = self.id_adv_conf
+					w = conf_weight(p_clean, k=k, p_thr=p_thr)
+					combined = combined * w
+				L_adv = combined.mean()
+				loss = loss + lam_cur * L_adv
+				# Logging
+				try:
+					self.logger.add_scalar(f"train/id_adv_lambda_current_{data_type}", float(lam_cur), self.global_step)
+					self.logger.add_scalar("train/id_adv_p_actor_mean", float(p_actor_mean.mean().item()), self.global_step)
+					self.logger.add_scalar("train/id_adv_p_actor_min_aug", float(p_actor_min_aug.mean().item()), self.global_step)
+					margin_clean = (logits_clean[:,1] - logits_clean[:,0]).mean()
+					self.logger.add_scalar("train/id_adv_logit_margin", float(margin_clean.item()), self.global_step)
+				except Exception:
+					pass
+				loss_dict['id_adv_lambda_current'] = float(lam_cur)
+				loss_dict['id_adv_p_actor_mean'] = float(p_actor_mean.mean().item())
+				loss_dict['id_adv_p_actor_min_aug'] = float(p_actor_min_aug.mean().item())
+				loss_dict['id_adv_logit_margin'] = float((logits_clean[:,1] - logits_clean[:,0]).mean().item())
 		if self.opts.l2_lambda > 0:
 			loss_l2 = F.mse_loss(y_hat, y)
 			loss_dict[f'loss_l2_{data_type}'] = float(loss_l2)
@@ -725,18 +854,20 @@ class Coach:
 
 	def parse_and_log_images(self, id_logs, x, y, y_hat, y_recovered, title, subscript=None, display_count=2):
 		im_data = []
-		for i in range(display_count):
+		max_i = min(display_count, int(x.size(0)), int(y.size(0)), int(y_hat.size(0)), int(y_recovered.size(0)))
+		for i in range(max_i):
 			cur_im_data = {
 				'input_face': common.tensor2im(x[i]),
 				'target_face': common.tensor2im(y[i]),
 				'output_face': common.tensor2im(y_hat[i]),
 				'recovered_face': common.tensor2im(y_recovered[i])
 			}
-			if id_logs is not None:
+			if id_logs is not None and i < len(id_logs):
 				for key in id_logs[i]:
 					cur_im_data[key] = id_logs[i][key]
 			im_data.append(cur_im_data)
-		self.log_images(title, im_data=im_data, subscript=subscript)
+		if len(im_data) > 0:
+			self.log_images(title, im_data=im_data, subscript=subscript)
 
 	def log_images(self, name, im_data, subscript=None, log_latest=False):
 		fig = common.vis_faces(im_data)

@@ -83,9 +83,23 @@ class TrainOptions:
         self.parser.add_argument('--cycle_lambda', default=0, type=float,
                                  help='Cycle loss multiplier factor')
 
-        # Identity-adversarial loss (Task 4)
+        # Identity-adversarial loss (Task 4) — flags only (no-op until enabled)
+        self.parser.add_argument('--id_adv_enabled', action='store_true',
+                                 help='Enable identity-adversarial guidance (off by default).')
         self.parser.add_argument('--id_adv_lambda', default=0.0, type=float,
                                  help='Weight for identity-adversarial loss using frozen discriminator; 0 disables.')
+        self.parser.add_argument('--id_adv_schedule_s1', type=str, default=None,
+                                 help='Stage-1 schedule for id_adv_lambda as "step:value,..." (e.g., "0:0.03,20000:0.05").')
+        self.parser.add_argument('--id_adv_focal_gamma', default=0.0, type=float,
+                                 help='Focal gamma for CE (0.0 => plain CE).')
+        self.parser.add_argument('--id_adv_margin', default=0.0, type=float,
+                                 help='Margin for hinge term on logits/probs (0.0 => off).')
+        self.parser.add_argument('--id_adv_tta', default='clean,flip,jpeg75,blur0.6', type=str,
+                                 help='Comma list of test-time augments for the classifier: clean,flip,jpeg75,blur0.6')
+        self.parser.add_argument('--id_adv_agg', default='mean(clean,flip)+0.5*min(jpeg75,blur0.6)', type=str,
+                                 help='Aggregation expression over TTAs (e.g., mean(clean,flip)+0.5*min(jpeg75,blur0.6)).')
+        self.parser.add_argument('--id_adv_conf_weight', default='', type=str,
+                                 help='Confidence-adaptive weight spec (e.g., k=6,p_thr=0.9). Empty => disabled.')
         self.parser.add_argument('--id_adv_model_path', default='', type=str,
                                  help='Path to trained actor-vs-all classifier checkpoint (.pth with state_dict).')
         self.parser.add_argument('--id_adv_backend', default='arcface', type=str,

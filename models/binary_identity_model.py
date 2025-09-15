@@ -1,4 +1,5 @@
 from typing import Literal, Optional
+from typing import List, Dict
 
 import torch
 import torch.nn as nn
@@ -99,4 +100,96 @@ def build_identity_model(
 	else:
 		raise ValueError(f'Unknown backend: {backend}')
 
+
+
+class IdentityModelWrapper(nn.Module):
+	"""
+	Thin, non-intrusive wrapper around a frozen binary identity classifier.
+	Provides single- and multi-view inference utilities and returns logits/probs.
+	"""
+
+	def __init__(self, classifier: nn.Module):
+		super().__init__()
+		self.classifier = classifier.eval()
+		for p in self.classifier.parameters():
+			p.requires_grad = False
+
+	def forward_single(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+		"""
+		Run the wrapped classifier on a single tensor batch.
+		Returns dict with 'logits' and 'probs' (softmax over dim=1).
+		"""
+		logits = self.classifier(x)
+		probs = torch.softmax(logits, dim=1)
+		return {"logits": logits, "probs": probs}
+
+	def forward_multi(self, views: List[torch.Tensor]) -> Dict[str, List[torch.Tensor]]:
+		"""
+		Run the wrapped classifier on multiple view tensors (e.g., TTA variants).
+		Each view must be a tensor of shape [B, C, H, W].
+		Returns dict {'logits': [tensors], 'probs': [tensors]} aligned per view.
+		"""
+		logits_list: List[torch.Tensor] = []
+		probs_list: List[torch.Tensor] = []
+		for v in views:
+			logits = self.classifier(v)
+			probs = torch.softmax(logits, dim=1)
+			logits_list.append(logits)
+			probs_list.append(probs)
+		return {"logits": logits_list, "probs": probs_list}
+
+
+def tta_flip_horizontal(x: torch.Tensor) -> torch.Tensor:
+	"""
+	Differentiable horizontal flip. Expects [-1,1] normalized float tensor [B,C,H,W].
+	"""
+	return torch.flip(x, dims=[-1])
+
+
+def _avgpool_reencode_like(x: torch.Tensor, scale: int = 2) -> torch.Tensor:
+	"""
+	Differentiable approximation of JPEG compression via downsample+upsample.
+	Scale=2 roughly imitates JPEG(≈75). Keeps dtype/device and gradients.
+	"""
+	if scale <= 1:
+		return x
+	B, C, H, W = x.shape
+	fh = max(1, H // scale)
+	fw = max(1, W // scale)
+	# Bilinear down-up preserves gradients
+	low = torch.nn.functional.interpolate(x, size=(fh, fw), mode='bilinear', align_corners=False)
+	up = torch.nn.functional.interpolate(low, size=(H, W), mode='bilinear', align_corners=False)
+	return up
+
+
+def tta_jpeg75(x: torch.Tensor) -> torch.Tensor:
+	"""
+	Differentiable JPEG(≈75) approximation using down-up sampling.
+	"""
+	return _avgpool_reencode_like(x, scale=2)
+
+
+def _gaussian_kernel1d(sigma: float, radius: int, device, dtype):
+	x = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
+	weight = torch.exp(-(x ** 2) / (2 * (sigma ** 2) + 1e-12))
+	weight = weight / weight.sum()
+	return weight
+
+
+def tta_gaussian_blur(x: torch.Tensor, sigma: float = 0.6) -> torch.Tensor:
+	"""
+	Differentiable Gaussian blur via separable conv. sigma≈0.6 ~ mild blur.
+	"""
+	# Choose radius ~ 3*sigma
+	radius = max(1, int(3.0 * float(sigma)))
+	weight = _gaussian_kernel1d(float(sigma), radius, x.device, x.dtype)
+	# Create depthwise conv filters
+	C = x.shape[1]
+	ker_h = weight.view(1, 1, -1, 1).repeat(C, 1, 1, 1)
+	ker_w = weight.view(1, 1, 1, -1).repeat(C, 1, 1, 1)
+	pad_h = (radius, radius)
+	pad_w = (radius, radius)
+	y = torch.nn.functional.conv2d(x, ker_h, padding=(pad_h[0], 0), groups=C)
+	y = torch.nn.functional.conv2d(y, ker_w, padding=(0, pad_w[0]), groups=C)
+	return y
 
